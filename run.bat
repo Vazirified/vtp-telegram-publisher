@@ -25,7 +25,7 @@ exit /b
 
 :LAUNCH_SETUP
 echo --------------------------------------------------------
-echo [-->] Handing over execution control to setup.bat...
+echo [--^>^] Handing over execution control to setup.bat...
 echo --------------------------------------------------------
 call setup.bat
 
@@ -37,7 +37,7 @@ echo ========================================================
 echo.
 echo   [OK] Setup process has completed successfully.
 echo.
-echo   [-->] Please launch run.bat AGAIN to open the application.
+echo   [--^>^] Please launch run.bat AGAIN to open the application.
 echo.
 echo ========================================================
 pause
@@ -45,7 +45,7 @@ exit /b
 
 :ACTIVATE_VENV
 :: Step 2: Safe activation of the virtual environment container
-echo [-->] Initializing isolated environment runtime...
+echo [--^>^] Initializing isolated environment runtime...
 call .venv\Scripts\activate
 echo [OK] Environment sandbox is live.
 echo.
@@ -58,7 +58,7 @@ goto MANUAL_MODE
 
 :LAUNCH_SCRIPT
 echo --------------------------------------------------------
-echo [-->] Launching interface engine...
+echo [--^>^] Launching interface engine...
 echo --------------------------------------------------------
 python Kernel\orchestrator.py
 echo --------------------------------------------------------

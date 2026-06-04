@@ -31,7 +31,7 @@ if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python312\python.exe" (
 :DOWNLOAD_PYTHON
 :: Step 3: Download and install Python completely headlessly
 echo [-] Python environment missing from this terminal workspace.
-echo [-->] Downloading official Python 3.12 installer via curl...
+echo [--^>^] Downloading official Python 3.12 installer via curl...
 curl -L -o "%TEMP%\python_installer.exe" https://www.python.org/ftp/python/3.12.3/python-3.12.3-amd64.exe
 
 if errorlevel 1 (
@@ -40,7 +40,7 @@ if errorlevel 1 (
     exit /b
 )
 
-echo [-->] Executing silent installation of Python 3.12...
+echo [--^>^] Executing silent installation of Python 3.12...
 echo       [Processing: ################] Please wait roughly 60s...
 start /wait "" "%TEMP%\python_installer.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 Shortcuts=0
 
@@ -68,7 +68,7 @@ echo.
 
 :: Step 4: Build local virtual environment container
 if not exist .venv (
-    echo [-->] Creating localized virtual environment venv...
+    echo [--^>^] Creating localized virtual environment venv...
     python -m venv .venv
     if errorlevel 1 (
         echo [ERROR] Core failure: Could not allocate virtual environment container.
@@ -80,15 +80,15 @@ if not exist .venv (
 )
 
 :: Step 5: Activation
-echo [-->] Activating local execution context...
+echo [--^>^] Activating local execution context...
 call .venv\Scripts\activate
 
 :: Step 6: Upgrade package managers inside container
-echo [-->] Upgrading environment core managers...
+echo [--^>^] Upgrading environment core managers...
 python -m pip install --upgrade pip setuptools wheel
 
 :: Step 7: Batch install pipeline requirements
-echo [-->] Syncing workspace dependencies with remote mirrors...
+echo [--^>^] Syncing workspace dependencies with remote mirrors...
 echo --------------------------------------------------------
 pip install requests telethon arabic-reshaper python-bidi Pillow textual google-generativeai
 echo --------------------------------------------------------

@@ -1,4 +1,17 @@
 @echo off
+
+:: Step 0: Auto-elevate execution container to Windows Terminal if available
+if not defined WT_SESSION (
+    where wt >nul 2>&1
+    if %errorlevel% equ 0 (
+        start "" wt -p "Command Prompt" cmd /c "%~f0"
+        exit /b
+    )
+)
+
+:: Force the current working directory to match the script's actual location
+cd /d "%~dp0"
+
 title ePlanet Publisher - Autonomous Setup Console
 cls
 

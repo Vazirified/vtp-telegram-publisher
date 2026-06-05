@@ -1,11 +1,10 @@
 import os
 import json
 
-# 1. Dynamically compute the absolute path to the project root directory.
+# 1. Absolute path mapping with clean lowercase structures
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
-# 2. Define target directory paths with clean lowercase and "_" prefix, anchored to project root.
 REQUIRED_DIRS = [
     os.path.join(PROJECT_ROOT, "_config"),
     os.path.join(PROJECT_ROOT, "_config", "templates"),
@@ -16,50 +15,68 @@ REQUIRED_DIRS = [
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
 
 def bootstrap_environment():
-    """
-    Verifies and builds the complete required directory layout if missing.
-    Ensures stateless test cleanups do not break execution loops.
-    """
+    """Verifies and structures the folder workspace environment."""
     for directory in REQUIRED_DIRS:
         if not os.path.exists(directory):
             os.makedirs(directory)
-            rel_path = os.path.relpath(directory, PROJECT_ROOT)
-            print(f"[+] Recreated missing directory: {rel_path}")
 
 def load_config():
-    """
-    Reads the channel master registry from disk. Returns a base template if empty.
-    """
+    """Reads configuration payload from disk. Enforces foundational schema maps."""
+    default_schema = {"catch_all_channel": None, "channels": {}}
     if not os.path.exists(CONFIG_FILE):
-        return {"channels": {}}
+        return default_schema
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            # Guarantee backward compatibility keys exist
+            if "catch_all_channel" not in data:
+                data["catch_all_channel"] = None
+            if "channels" not in data:
+                data["channels"] = {}
+            return data
     except (json.JSONDecodeError, IOError):
-        print("[!] Error reading channels.json. Initializing clean registry structure.")
-        return {"channels": {}}
+        return default_schema
 
 def save_config(config_data):
-    """
-    Writes the updated channel registry back to channels.json.
-    """
+    """Commits system runtime configurations back cleanly to disk."""
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(config_data, f, indent=2, ensure_ascii=False)
-        print("[OK] Configuration saved successfully.")
+        print("[OK] Configuration state successfully committed.")
     except IOError as e:
-        print(f"[ERROR] Failed to commit changes to disk: {e}")
+        print(f"[ERROR] Disk write failure: {e}")
+
+def configure_global_catch_all():
+    """Dedicated management wizard for handling the review gate identity."""
+    config_data = load_config()
+    current_gate = config_data.get("catch_all_channel")
+
+    print("\n=== Global Catch-All (Review Gate) Configuration ===")
+    print(f"  Current Gate Target: {current_gate if current_gate else 'DISABLED (Direct Publishing Live)'}")
+    print("--------------------------------------------------------")
+    print("  When active, ALL formatted image/caption variants are sent here first")
+    print("  for human verification before distribution loops run.")
+    print("--------------------------------------------------------")
+
+    choice = input("[?] Enable/Modify review staging gate? (y/n): ").strip().lower()
+    if choice in ['y', 'yes']:
+        new_gate = input("[?] Enter Staging Channel Telegram ID (e.g., @eplanet_staging): ").strip()
+        if new_gate:
+            config_data["catch_all_channel"] = new_gate
+            save_config(config_data)
+        else:
+            print("[!] Invalid input. Staging gate state unchanged.")
+    else:
+        disable_choice = input("[?] Completely disable review gating? (y/n): ").strip().lower()
+        if disable_choice in ['y', 'yes']:
+            config_data["catch_all_channel"] = None
+            save_config(config_data)
+            print("[OK] Review staging gate deactivated. Content will publish directly.")
 
 def prompt_layout_config(channel_key, existing_layout=None):
-    """
-    Interactive terminal sub-wizard to configure coordinates, spacing,
-    bounding box limits, and typography/alignment variables.
-    """
     layout = existing_layout or {}
     print(f"\n--- Image Layout Settings for {channel_key} ---")
-
     layout["canvas_size"] = [1000, 1000]
-    print("[i] Output target resolution is locked to 1000x1000 pixels.")
 
     print("\nSelect Canvas Preset Profile:")
     print("  [1] Standard Top Frame    (1000x680 area with smart crop)")
@@ -88,7 +105,6 @@ def prompt_layout_config(channel_key, existing_layout=None):
         raw_placement["height"] = int(input("    Target Height: ") or 700)
 
     layout["raw_image_placement"] = raw_placement
-
     default_overlay = f"_config/templates/{channel_key}_overlay.png"
     overlay_input = input(f"[?] Branding Overlay PNG Path [Default: {default_overlay}]: ").strip()
     layout["template_overlay_path"] = overlay_input if overlay_input else default_overlay
@@ -108,80 +124,38 @@ def prompt_layout_config(channel_key, existing_layout=None):
     safe_area["font_color"] = input(f"    Hex Font Color Code   [Current: {safe_area.get('font_color', '#FFFFFF')}]: ").strip() or safe_area.get("font_color", "#FFFFFF")
 
     print("\nSelect Headline Horizontal Alignment Rule:")
-    print("  [1] Left Alignment")
-    print("  [2] Center Alignment")
-    print("  [3] Right Alignment")
+    print("  [1] Left Alignment | [2] Center Alignment | [3] Right Alignment")
     align_choice = input("[?] Choose layout alignment [1-3]: ").strip()
-
-    if align_choice == "1":
-        safe_area["alignment"] = "left"
-    elif align_choice == "2":
-        safe_area["alignment"] = "center"
-    elif align_choice == "3":
-        safe_area["alignment"] = "right"
-    else:
-        safe_area["alignment"] = safe_area.get("alignment", "left")
+    safe_area["alignment"] = "center" if align_choice == "2" else ("right" if align_choice == "3" else "left")
 
     layout["headline_safe_area"] = safe_area
     return layout
 
 def prompt_caption_config(channel_key, existing_caption=None):
-    """
-    Provides a free-form text template onboarding terminal for headers
-    and footers supporting dynamic content syntax placeholders.
-    """
     caps = existing_caption or {}
     print(f"\n--- Free-Form Caption Templates for {channel_key} ---")
-    print("  +----------------------------------------------------------------+")
-    print("  : FORMATTING RULES REFERENCE:                                    :")
-    print("  : Use {headline} to place the parsed title string.                :")
-    print("  : Use {channel} to inject the channel identifier link.           :")
-    print("  : Use [eid:64BitID] to render premium custom animated emojis.     :")
-    print("  : Extraction Tool: .venv\\Scripts\\python kernel\\inspect_emoji.py  :")
-    print("  +----------------------------------------------------------------+")
-
-    default_hdr = "⚠️ [eid:5368324170671202286] BREAKING: {headline}"
-    default_ftr = "📣 Follow updates on {channel} [eid:543216789012345]"
-
-    print(f"\n[i] Example Header String: {default_hdr}")
     hdr_input = input(f"[?] Enter Header Template Line\n    [Current: {caps.get('header_template', 'Blank')}]: ").strip()
     caps["header_template"] = hdr_input if hdr_input else caps.get("header_template", "")
-
-    print(f"\n[i] Example Footer String: {default_ftr}")
     ftr_input = input(f"[?] Enter Footer Template Line\n    [Current: {caps.get('footer_template', 'Blank')}]: ").strip()
     caps["footer_template"] = ftr_input if ftr_input else caps.get("footer_template", "")
-
     return caps
 
 def add_or_modify_channel(channel_key=None):
-    """
-    Assembles configuration schema nodes. Adds a fresh channel entry or
-    overwrites properties of an existing channel reference key.
-    """
     config_data = load_config()
     is_new = channel_key is None
 
     if is_new:
         print("\n=== Registering New Target Channel ===")
-        channel_key = input("[?] Internal reference name (e.g., eplanet_fa_news): ").strip().lower()
-        if not channel_key:
-            print("[ERROR] Identity key cannot be empty. Aborting channel registration.")
-            return
-        if channel_key in config_data["channels"]:
-            print(f"[!] Target reference profile key '{channel_key}' already exists. Shifting to update mode.")
-            is_new = False
+        channel_key = input("[?] Internal reference name (e.g., fa_news): ").strip().lower()
+        if not channel_key: return
+        if channel_key in config_data["channels"]: is_new = False
 
     profile = config_data["channels"].get(channel_key, {})
-
-    print(f"\nEditing attributes for: {channel_key}")
     profile["chat_id"] = input(f"[?] Telegram Public ID/Chat Entity [Current: {profile.get('chat_id', '@eplanet')}]: ").strip() or profile.get("chat_id", "@eplanet")
-    profile["language"] = input(f"[?] Channel Language Code ISO (e.g., fa, ku, en) [Current: {profile.get('language', 'en')}]: ").strip().lower() or profile.get("language", "en")
+    profile["language"] = input(f"[?] Channel Language Code ISO [Current: {profile.get('language', 'en')}]: ").strip().lower() or profile.get("language", "en")
 
-    rtl_prompt = input(f"[?] Is this a Right-To-Left (RTL) language layout? (y/n) [Current: {profile.get('is_rtl', False)}]: ").strip().lower()
-    if rtl_prompt:
-        profile["is_rtl"] = True if rtl_prompt in ['y', 'yes'] else False
-    elif "is_rtl" not in profile:
-        profile["is_rtl"] = False
+    rtl_prompt = input(f"[?] Is this a Right-To-Left (RTL) layout? (y/n) [Current: {profile.get('is_rtl', False)}]: ").strip().lower()
+    profile["is_rtl"] = True if rtl_prompt in ['y', 'yes'] else (profile.get('is_rtl', False) if not rtl_prompt else False)
 
     profile["image_layout"] = prompt_layout_config(channel_key, profile.get("image_layout"))
     profile["caption_settings"] = prompt_caption_config(channel_key, profile.get("caption_settings"))
@@ -190,81 +164,58 @@ def add_or_modify_channel(channel_key=None):
     save_config(config_data)
 
 def display_channels():
-    """
-    Prints a clear overview table listing currently configured publishing targets.
-    """
     config_data = load_config()
     channels = config_data.get("channels", {})
+    gate = config_data.get("catch_all_channel")
 
     print("\n========================================================")
-    print("  CURRENTLY DEFINED CHANNELS REGISTRY")
+    print("  LIVE DISTRIBUTION REGISTRY STATUS")
+    print("========================================================")
+    print(f"  GLOBAL STAGING REVIEW GATE : {gate if gate else 'DISABLED (Direct Mode)'}")
     print("========================================================")
     if not channels:
-        print("  [i] No target channels registered inside channels.json.")
+        print("  [i] No target publishing language channels registered.")
     else:
         for key, info in channels.items():
             align = info.get("image_layout", {}).get("headline_safe_area", {}).get("alignment", "N/A")
             rtl_flag = "[RTL]" if info.get("is_rtl") else "[LTR]"
-            hdr_str = info.get("caption_settings", {}).get("header_template", "None")
             print(f"  Reference Key : {key}")
             print(f"  Telegram ID   : {info.get('chat_id')}")
-            print(f"  Lang Identity : {info.get('language')} {rtl_flag} | Text Align: {align}")
-            print(f"  Header Config : {hdr_str}")
+            print(f"  Config Target : {info.get('language')} {rtl_flag} | Alignment: {align}")
             print("  ------------------------------------------------------")
     print("========================================================\n")
 
 def interactive_console():
-    """
-    The main shell loop. Exposes basic management choices to the terminal operator.
-    """
     bootstrap_environment()
-
-    if not os.path.exists(CONFIG_FILE) or not load_config().get("channels"):
-        print("[!] Channel configuration registry missing or empty.")
-        print("[-->] Automatically starting initial channel configuration wizard...")
-        add_or_modify_channel()
-
     while True:
         print("========================================================")
         print("  ePLANET PUBLISHER ADMINISTRATIVE CONFIGURATOR")
         print("========================================================")
-        print("  1. List Registered Publishing Channels")
+        print("  1. List Profile Registries & Staging Status")
         print("  2. Add a Brand New Channel Target Profile")
         print("  3. Modify an Existing Channel Configuration")
         print("  4. Remove a Channel Profile Reference")
-        print("  5. Exit Console Engine")
+        print("  5. Configure Global Catch-All Review Gate")
+        print("  6. Exit Console Engine")
         print("========================================================")
-        choice = input("[?] Choose operations option [1-5]: ").strip()
+        choice = input("[?] Choose operations option [1-6]: ").strip()
 
-        if choice == "1":
-            display_channels()
-        elif choice == "2":
-            add_or_modify_channel()
+        if choice == "1": display_channels()
+        elif choice == "2": add_or_modify_channel()
         elif choice == "3":
             display_channels()
-            key_to_mod = input("[?] Input target reference key to modify: ").strip().lower()
-            config_data = load_config()
-            if key_to_mod in config_data["channels"]:
-                add_or_modify_channel(key_to_mod)
-            else:
-                print(f"[ERROR] Reference tracking key '{key_to_mod}' not found.")
+            key_to_mod = input("[?] Input reference key to modify: ").strip().lower()
+            if key_to_mod in load_config()["channels"]: add_or_modify_channel(key_to_mod)
         elif choice == "4":
             display_channels()
-            key_to_del = input("[?] Input target reference key to erase: ").strip().lower()
+            key_to_del = input("[?] Input reference key to erase: ").strip().lower()
             config_data = load_config()
             if key_to_del in config_data["channels"]:
-                confirm = input(f"[!] Are you sure you want to delete '{key_to_del}'? (y/n): ").strip().lower()
-                if confirm in ['y', 'yes']:
+                if input(f"[!] Erase '{key_to_del}'? (y/n): ").strip().lower() in ['y', 'yes']:
                     del config_data["channels"][key_to_del]
                     save_config(config_data)
-                    print(f"[OK] Profile entry '{key_to_del}' dropped.")
-            else:
-                print(f"[ERROR] Reference tracking key '{key_to_del}' not found.")
-        elif choice == "5":
-            print("\n[-->] Closing administrative control terminal context.")
-            break
-        else:
-            print("[!] Invalid action choice pattern. Please select 1 through 5.")
+        elif choice == "5": configure_global_catch_all()
+        elif choice == "6": break
         print("\n")
 
 if __name__ == "__main__":

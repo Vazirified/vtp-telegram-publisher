@@ -5,15 +5,15 @@ import json
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
-# 2. Define target directory paths with the "_" prefix, anchored strictly to the project root.
+# 2. Define target directory paths with clean lowercase and "_" prefix, anchored to project root.
 REQUIRED_DIRS = [
-    os.path.join(PROJECT_ROOT, "_Config"),
-    os.path.join(PROJECT_ROOT, "_Config", "templates"),
-    os.path.join(PROJECT_ROOT, "_Config", "fonts"),
-    os.path.join(PROJECT_ROOT, "_Workspace"),
-    os.path.join(PROJECT_ROOT, "_Credentials")
+    os.path.join(PROJECT_ROOT, "_config"),
+    os.path.join(PROJECT_ROOT, "_config", "templates"),
+    os.path.join(PROJECT_ROOT, "_config", "fonts"),
+    os.path.join(PROJECT_ROOT, "_workspace"),
+    os.path.join(PROJECT_ROOT, "_credentials")
 ]
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "_Config", "channels.json")
+CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
 
 def bootstrap_environment():
     """
@@ -89,7 +89,7 @@ def prompt_layout_config(channel_key, existing_layout=None):
 
     layout["raw_image_placement"] = raw_placement
 
-    default_overlay = f"_Config/templates/{channel_key}_overlay.png"
+    default_overlay = f"_config/templates/{channel_key}_overlay.png"
     overlay_input = input(f"[?] Branding Overlay PNG Path [Default: {default_overlay}]: ").strip()
     layout["template_overlay_path"] = overlay_input if overlay_input else default_overlay
 
@@ -101,7 +101,7 @@ def prompt_layout_config(channel_key, existing_layout=None):
     safe_area["max_height"] = int(input(f"    Bounding Box Max H   [Current: {safe_area.get('max_height', 200)}]: ") or safe_area.get("max_height", 200))
 
     print("\nConfigure Typography Profile:")
-    default_font = f"_Config/fonts/{channel_key}_font.ttf"
+    default_font = f"_config/fonts/{channel_key}_font.ttf"
     font_input = input(f"    Font Path (.ttf file) [Current: {safe_area.get('font_path', default_font)}]: ").strip()
     safe_area["font_path"] = font_input if font_input else safe_area.get("font_path", default_font)
     safe_area["font_size"] = int(input(f"    Base Font Size Pt     [Current: {safe_area.get('font_size', 44)}]: ") or safe_area.get("font_size", 44))
@@ -137,10 +137,9 @@ def prompt_caption_config(channel_key, existing_caption=None):
     print("  : Use {headline} to place the parsed title string.                :")
     print("  : Use {channel} to inject the channel identifier link.           :")
     print("  : Use [eid:64BitID] to render premium custom animated emojis.     :")
-    print("  : Extraction Tool: .venv\\Scripts\\python Kernel\\inspect_emoji.py  :")
+    print("  : Extraction Tool: .venv\\Scripts\\python kernel\\inspect_emoji.py  :")
     print("  +----------------------------------------------------------------+")
 
-    # Default fallbacks to guide input strings
     default_hdr = "⚠️ [eid:5368324170671202286] BREAKING: {headline}"
     default_ftr = "📣 Follow updates on {channel} [eid:543216789012345]"
 
@@ -184,7 +183,6 @@ def add_or_modify_channel(channel_key=None):
     elif "is_rtl" not in profile:
         profile["is_rtl"] = False
 
-    # Route configuration to layout and caption string templates
     profile["image_layout"] = prompt_layout_config(channel_key, profile.get("image_layout"))
     profile["caption_settings"] = prompt_caption_config(channel_key, profile.get("caption_settings"))
 

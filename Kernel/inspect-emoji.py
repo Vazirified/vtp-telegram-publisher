@@ -2,16 +2,16 @@ import os
 import json
 from telethon import TelegramClient, events
 
-# Compute absolute paths relative to project root
+# Compute absolute paths relative to project root with lowercase structure
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_Credentials")
+CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
 KEYS_FILE = os.path.join(CREDENTIALS_DIR, "telegram_keys.json")
 SESSION_FILE = os.path.join(CREDENTIALS_DIR, "inspector_session")
 
 def get_telegram_app_credentials():
     """
-    Ensures _Credentials exists, reads app keys if available,
+    Ensures _credentials exists, reads app keys if available,
     or interviews the user once to save them state-lessly.
     """
     if not os.path.exists(CREDENTIALS_DIR):
@@ -39,19 +39,15 @@ def get_telegram_app_credentials():
         print("[ERROR] API ID must be a number. Execution terminated.")
         exit(1)
 
-    # Save to disk inside _Credentials so other scripts can access them later
     with open(KEYS_FILE, "w", encoding="utf-8") as f:
         json.dump({"api_id": api_id, "api_hash": api_hash}, f, indent=2)
 
-    print("[OK] Application credentials committed to _Credentials/telegram_keys.json")
+    print("[OK] Application credentials committed to _credentials/telegram_keys.json")
     return api_id, api_hash
 
 def main():
-    # 1. Fetch or initialize the application keys
     api_id, api_hash = get_telegram_app_credentials()
 
-    # 2. Spin up the Telethon client target pointing inside _Credentials/
-    # If inspector_session.session doesn't exist, Telethon handles the SMS login automatically.
     print("\n[-->] Initializing user authorization handshake...")
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 

@@ -27,7 +27,7 @@ goto ACTIVATE_VENV
 :MISSING_VENV
 echo [!] System environment is not initialized.
 echo.
-set /p setup_choice=[?] Virtual environment not found. Run setup.bat now? [y/n]: 
+set /p setup_choice=[?] Virtual environment not found. Run setup.bat now? [y/n]:
 
 if /i "%setup_choice%"=="y" goto LAUNCH_SETUP
 echo --------------------------------------------------------
@@ -42,7 +42,6 @@ echo [--^>^] Handing over execution control to setup.bat...
 echo --------------------------------------------------------
 call setup.bat
 
-:: This section catches control after setup.bat finishes
 cls
 echo ========================================================
 echo   ePLANET PUBLISHER - ENVIRONMENT READY
@@ -63,8 +62,8 @@ call .venv\Scripts\activate
 echo [OK] Environment sandbox is live.
 echo.
 
-:: Step 3: Interactive Prompt Routing
-set /p choice=[?] Launch orchestrator interface script? [y/n]: 
+:: Step 3: Interactive Prompt Routing (Updated to unified lowercase kernel layout)
+set /p choice=[?] Launch orchestrator interface script? [y/n]:
 
 if /i "%choice%"=="y" goto LAUNCH_SCRIPT
 goto MANUAL_MODE
@@ -73,7 +72,7 @@ goto MANUAL_MODE
 echo --------------------------------------------------------
 echo [--^>^] Launching interface engine...
 echo --------------------------------------------------------
-python Kernel\orchestrator.py
+python kernel\orchestrator.py
 echo --------------------------------------------------------
 echo [i] Script execution complete.
 pause

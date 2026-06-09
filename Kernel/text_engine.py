@@ -140,12 +140,10 @@ def execute_text_pipeline(raw_payload: str) -> str:
     client = genai.Client(api_key=api_token)
 
     system_instruction = (
-        f"You are an expert multilingual content translation engine. Your task is to process incoming text data "
-        f"and output translations matching this target language array: {target_languages}.\n\n"
+        f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations matching this target language array: {target_languages}.\n\n"
         f"Parsing Layout Rules:\n"
         f"1. Isolate the text into its respective provided languages.\n"
-        f"2. Within each language block, the very first line or first paragraph is ALWAYS the headline. "
-        f"Any text appearing after the first newline character sequence or empty line gap is the body.\n"
+        f"2. Within each language block, the very first line or first paragraph is ALWAYS the headline. Any text appearing after the first newline character sequence or empty line gap is the body.\n"
         f"3. If English ('en') text is missing from the input, generate it first to act as the primary master reference.\n"
         f"4. For any target languages in the requested array that are missing from the input text, translate the English "
         f"headline and body into that target language, strictly maintaining the structural split rule.\n"

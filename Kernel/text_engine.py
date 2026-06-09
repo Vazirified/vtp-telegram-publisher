@@ -18,33 +18,70 @@ TELEGRAM_CLIPBOARD_REGEX = re.compile(
     r'\[\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*[^:]+\s*:\s*'
 )
 
-def get_gemini_api_token():
-    """Checks for localized api token profiles or interviews the user once."""
-    if not os.path.exists(CREDENTIALS_DIR):
-        os.makedirs(CREDENTIALS_DIR)
-
+def load_gemini_credentials():
+    """Reads localized credential and model tracking profiles from disk."""
     if os.path.exists(GEMINI_KEYS_FILE):
         try:
             with open(GEMINI_KEYS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data["gemini_api_key"]
-        except (json.JSONDecodeError, KeyError, IOError):
-            print("[!] API Token profile corrupted. Re-initializing credential gate.")
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"gemini_api_key": None, "last_used_model": "gemini-1.5-flash"}
+
+def save_gemini_credentials(api_key, model_name):
+    """Saves the api key and caches the last selected model for sticky defaults."""
+    if not os.path.exists(CREDENTIALS_DIR):
+        os.makedirs(CREDENTIALS_DIR)
+
+    payload = {
+        "gemini_api_key": api_key,
+        "last_used_model": model_name
+    }
+    with open(GEMINI_KEYS_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+def select_operational_model(cached_profile):
+    """
+    Displays an interactive terminal menu allowing operators to dynamically
+    switch model clusters or press enter to reuse the last verified profile.
+    """
+    last_model = cached_profile.get("last_used_model", "gemini-1.5-flash")
+
+    # Map friendly options to official Google API model identifiers
+    model_matrix = {
+        "1": "gemini-2.5-flash",
+        "2": "gemini-1.5-flash",
+        "3": "gemini-1.5-pro"
+    }
+
+    print("\n========================================================")
+    print("  GEMINI INTELLIGENCE CLUSTER ROUTER")
+    print("========================================================")
+    print("  [1] Gemini 2.5 Flash  (High Speed - Cutting Edge)")
+    print("  [2] Gemini 1.5 Flash  (High Capacity - Stable Workhorse)")
+    print("  [3] Gemini 1.5 Pro    (Deep Reasoning - Complex Translation)")
+    print(f"  [Enter] Reuse Last Working Default ({last_model})")
+    print("========================================================")
+
+    choice = input("[?] Select engine target lane [1-3]: ").strip()
+
+    selected_model = model_matrix.get(choice, last_model)
+    print(f"[OK] Pipeline routing locked to engine target: {selected_model}\n")
+    return selected_model
+
+def get_gemini_api_token(cached_profile):
+    """Guarantees token acquisition gate validation loops."""
+    api_key = cached_profile.get("gemini_api_key")
+    if api_key:
+        return api_key
 
     print("+------------------------------------------------------+")
     print(":     GOOGLE AI STUDIO UNIFIED SDK AUTHENTICATION      :")
     print("+------------------------------------------------------+")
-    print("[i] An API Key is required to run the translation matrix.")
-    print("[i] Obtain a free token here: https://aistudio.google.com")
-    print("--------------------------------------------------------")
-
     api_key = input("[?] Paste your Gemini API Key token: ").strip()
     if not api_key:
         print("[ERROR] Token key string cannot be empty. Execution terminated.")
         exit(1)
-
-    with open(GEMINI_KEYS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"gemini_api_key": api_key}, f, indent=2)
 
     return api_key
 
@@ -69,16 +106,23 @@ def extract_target_languages():
         return ["en"]
 
 def execute_text_pipeline(raw_payload: str) -> str:
-    """Sanitizes input, processes translations via modern google-genai client, saves files."""
+    """Sanitizes input, runs dynamic model routing, fires API request, and commits MDs."""
     clean_text = sanitize_clipboard_text(raw_payload)
     if not clean_text:
         print("[ERROR] Input text payload resolved to empty string after serialization pass.")
         return None
 
-    target_languages = extract_target_languages()
-    api_token = get_gemini_api_token()
+    # Step 1: Manage credentials and display sticky model menu
+    cached_profile = load_gemini_credentials()
+    api_token = get_gemini_api_token(cached_profile)
+    active_model = select_operational_model(cached_profile)
 
-    # Initialize the modern, supported GenAI Client instance
+    # Commit selection state to local cache configuration
+    save_gemini_credentials(api_token, active_model)
+
+    target_languages = extract_target_languages()
+
+    # Initialize the modern GenAI Client instance
     client = genai.Client(api_key=api_token)
 
     system_instruction = (
@@ -96,11 +140,10 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
     prompt = f"Process the following source content text:\n\n{clean_text}"
 
-    print("[~] Contacting Unified GenAI Gateway... Running Gemini 2.5 Core Matrix...")
+    print(f"[~] Connecting to Unified Gateway via cluster route '{active_model}'...")
     try:
-        # Utilize modern client configuration structures
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=active_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -110,7 +153,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
         parsed_payload = json.loads(response.text)
 
     except Exception as e:
-        print(f"[ERROR] Unified SDK processing breakdown: {e}")
+        print(f"[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
         return None
 
     # Step 5: Write out clean, human-readable Markdown Files in Timestamp Session Folder
@@ -131,7 +174,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
         print(f"  └─ Generated: {md_file_name} [OK]")
 
-    print("\n[SUCCESS] Modern text processing core run complete.")
+    print("\n[SUCCESS] Dynamic text processing core run complete.")
     return session_directory
 
 if __name__ == "__main__":

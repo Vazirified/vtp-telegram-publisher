@@ -139,7 +139,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
     client = genai.Client(api_key=api_token)
 
-    system_instruction = (
+system_instruction = (
         f"You are an expert multilingual content translation engine. Your task is to process incoming text data "
         f"and output translations matching this target language array: {target_languages}.\n\n"
         f"Parsing Layout Rules:\n"
@@ -149,8 +149,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
         f"3. If English ('en') text is missing from the input, generate it first to act as the primary master reference.\n"
         f"4. For any target languages in the requested array that are missing from the input text, translate the English "
         f"headline and body into that target language, strictly maintaining the structural split rule.\n"
-        f"5. LANGUAGE SPECIAL RULE: The key code 'ckb' explicitly demands Central Kurdish (Sorani dialect) "
-        f"written purely in the Arabic/Perso-Arabic script layout alphabet. Do NOT use Latin characters for 'ckb'.\n"
+        f"5. LANGUAGE SPECIAL RULE: For 'ckb' (Central Kurdish / Sorani), you MUST construct the native grammar and vocabulary using the standard Sorani Perso-Arabic alphabet (e.g., پ, چ, ژ, گ, ە, ڤ). Cyrillic characters are ABSOLUTELY FORBIDDEN. However, you ARE explicitly permitted to retain English (Latin) characters ONLY for untranslatable financial terminology, ticker symbols, proper nouns, or acronyms.\n"
         f"6. CRITICAL: The root of your output MUST be a JSON Object (dictionary), NOT a JSON Array (list). "
         f"The primary dictionary keys must be the lowercase language strings (e.g., 'en', 'fa', 'ckb').\n\n"
         f"Expected Schema Layout Format:\n"

@@ -72,27 +72,21 @@ def select_operational_model(cached_profile):
         client = genai.Client(api_key=api_token)
         live_models = []
 
-        # Pull live records from Google's registry
         for model_meta in client.models.list():
-            # FILTER 1: Only look at user-facing Gemini variations
             if "gemini" in model_meta.name.lower():
-                # FILTER 2: Exclude utility tools (vision-only, embedding, audio streams)
                 if any(bad_tag in model_meta.name.lower() for bad_tag in ["embedding", "vision", "live", "audio", "search"]):
                     continue
-                # FILTER 3: Enforce text content capability
                 if "generateContent" in model_meta.supported_actions:
                     clean_name = model_meta.name.split("/")[-1]
                     if clean_name not in live_models:
                         live_models.append(clean_name)
 
-        # Sort models alphabetically so newer variations group together logically
         live_models.sort()
 
     except Exception as e:
         print(f"[!] Warning: Unable to poll live registry ({e}). Defaulting to offline profile.")
         return last_model
 
-    # Build the dynamic choice matrix mapping index integers to names
     model_matrix = {str(i + 1): name for i, name in enumerate(live_models)}
 
     print("\n========================================================")
@@ -137,22 +131,18 @@ def execute_text_pipeline(raw_payload: str) -> str:
         print("[ERROR] Input text payload resolved to empty string after serialization pass.")
         return None
 
-    # Step 1: Initialize credentials and pass keys safely
     cached_profile = load_gemini_credentials()
     api_token = get_gemini_api_token(cached_profile)
 
-    # Inject token into memory to ensure first-run dynamic check succeeds
     cached_profile["gemini_api_key"] = api_token
     active_model = select_operational_model(cached_profile)
 
-    # Commit changes permanently to disk
     save_gemini_credentials(api_token, active_model)
-
     target_languages = extract_target_languages()
 
-    # Initialize the modern GenAI Client instance
     client = genai.Client(api_key=api_token)
 
+    # CRITICAL FIX: Explicitly defined strict JSON dictionary mapping schema rules
     system_instruction = (
         f"You are an expert multilingual content translation engine. Your task is to process incoming text data "
         f"and output translations matching this target language array: {target_languages}.\n\n"
@@ -163,7 +153,15 @@ def execute_text_pipeline(raw_payload: str) -> str:
         f"3. If English ('en') text is missing from the input, generate it first to act as the primary master reference.\n"
         f"4. For any target languages in the requested array that are missing from the input text, translate the English "
         f"headline and body into that target language, strictly maintaining the structural split rule.\n"
-        f"5. Return the final data object mapping strictly to the defined schema layout containing 'headline' and 'body' string keys."
+        f"5. CRITICAL: The root of your output MUST be a JSON Object (dictionary), NOT a JSON Array (list). "
+        f"The primary dictionary keys must be the lowercase language strings (e.g., 'en', 'fa').\n\n"
+        f"Expected Schema Layout Format:\n"
+        f"{{\n"
+        f"  \"en\": {{\n"
+        f"    \"headline\": \"String Text content here\",\n"
+        f"    \"body\": \"String Body content paragraphs here\"\n"
+        f"  }}\n"
+        f"}}"
     )
 
     prompt = f"Process the following source content text:\n\n{clean_text}"
@@ -180,17 +178,39 @@ def execute_text_pipeline(raw_payload: str) -> str:
         )
         parsed_payload = json.loads(response.text)
 
+        # DEFENSIVE HYBRID LAYER: If the AI ignores structural rules and outputs a list, normalize it instantly.
+        if isinstance(parsed_payload, list):
+            normalized_dict = {}
+            for block in parsed_payload:
+                if isinstance(block, dict):
+                    # Handle structure variant A: {"language": "en", "headline": "...", "body": "..."}
+                    if "language" in block:
+                        lang_key = str(block["language"]).lower()
+                        normalized_dict[lang_key] = {
+                            "headline": block.get("headline", ""),
+                            "body": block.get("body", "")
+                        }
+                    # Handle structure variant B: {"en": {"headline": "...", "body": "..."}}
+                    else:
+                        for k, v in block.items():
+                            if isinstance(v, dict) and ("headline" in v or "body" in v):
+                                normalized_dict[k.lower()] = v
+            parsed_payload = normalized_dict
+
     except Exception as e:
         print(f"[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
         return None
 
-    # Step 2: Write out clean, human-readable Markdown Files in Timestamp Session Folder
+    # Step 5: Write out clean, human-readable Markdown Files in Timestamp Session Folder
     timestamp = datetime.datetime.now().strftime("session_%Y%m%d_%H%M%S")
     session_directory = os.path.join(WORKSPACE_DIR, timestamp)
     os.makedirs(session_directory, exist_ok=True)
 
     print(f"\n[+] Committing sole source-of-truth entries to: _workspace/{timestamp}/")
     for lang_code, content in parsed_payload.items():
+        if not isinstance(content, dict):
+            continue
+
         headline = content.get("headline", "").strip()
         body = content.get("body", "").strip()
 

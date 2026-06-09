@@ -2,7 +2,8 @@ import os
 import re
 import json
 import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # 1. Absolute Path Layout Mappings (Unified lowercase naming standard)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -31,7 +32,7 @@ def get_gemini_api_token():
             print("[!] API Token profile corrupted. Re-initializing credential gate.")
 
     print("+------------------------------------------------------+")
-    print(":        GOOGLE AI STUDIO CORE API AUTHENTICATION      :")
+    print(":     GOOGLE AI STUDIO UNIFIED SDK AUTHENTICATION      :")
     print("+------------------------------------------------------+")
     print("[i] An API Key is required to run the translation matrix.")
     print("[i] Obtain a free token here: https://aistudio.google.com")
@@ -68,17 +69,18 @@ def extract_target_languages():
         return ["en"]
 
 def execute_text_pipeline(raw_payload: str) -> str:
-    """Sanitizes input, executes line-break paragraph parsing via Gemini, and saves files."""
+    """Sanitizes input, processes translations via modern google-genai client, saves files."""
     clean_text = sanitize_clipboard_text(raw_payload)
     if not clean_text:
-        print("[ERROR] Input text payload resolved to empty string after sanitization pass.")
+        print("[ERROR] Input text payload resolved to empty string after serialization pass.")
         return None
 
     target_languages = extract_target_languages()
     api_token = get_gemini_api_token()
-    genai.configure(api_key=api_token)
 
-    # REFINED STRUCTURAL PROMPT: Enforces the Paragraph/Newline parsing rules explicitly
+    # Initialize the modern, supported GenAI Client instance
+    client = genai.Client(api_key=api_token)
+
     system_instruction = (
         f"You are an expert multilingual content translation engine. Your task is to process incoming text data "
         f"and output translations matching this target language array: {target_languages}.\n\n"
@@ -86,7 +88,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
         f"1. Isolate the text into its respective provided languages.\n"
         f"2. Within each language block, the very first line or first paragraph is ALWAYS the headline. "
         f"Any text appearing after the first newline character sequence or empty line gap is the body.\n"
-        f"3. If English ('en') text is missing from the input, generate it first to act as the primary master semantic reference.\n"
+        f"3. If English ('en') text is missing from the input, generate it first to act as the primary master reference.\n"
         f"4. For any target languages in the requested array that are missing from the input text, translate the English "
         f"headline and body into that target language, strictly maintaining the structural split rule.\n"
         f"5. Return the final data object mapping strictly to the defined schema layout containing 'headline' and 'body' string keys."
@@ -94,18 +96,21 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
     prompt = f"Process the following source content text:\n\n{clean_text}"
 
-    print("[~] Contacting Gemini Text Gateway... Processing translation layers...")
+    print("[~] Contacting Unified GenAI Gateway... Running Gemini 2.5 Core Matrix...")
     try:
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
-            generation_config={"response_mime_type": "application/json"}
+        # Utilize modern client configuration structures
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                response_mime_type="application/json"
+            )
         )
-
-        response = model.generate_content([system_instruction, prompt])
         parsed_payload = json.loads(response.text)
 
     except Exception as e:
-        print(f"[ERROR] Connection or Parsing breakdown with Gemini Engine API: {e}")
+        print(f"[ERROR] Unified SDK processing breakdown: {e}")
         return None
 
     # Step 5: Write out clean, human-readable Markdown Files in Timestamp Session Folder
@@ -126,21 +131,15 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
         print(f"  └─ Generated: {md_file_name} [OK]")
 
-    print("\n[SUCCESS] Text processing and compilation phase is complete.")
+    print("\n[SUCCESS] Modern text processing core run complete.")
     return session_directory
 
 if __name__ == "__main__":
-    # Test paste completely lacking any markdown symbols, relying purely on real-world line breaks
     mock_plain_text_paste = """
-    [6/8/2026 4:39 PM] Kaveh:
-    Advanced Crystal Matrix Identified in Lab Test
+    [6/9/2026 3:15 PM] Kaveh:
+    Unified Core Environment Successfully Implemented
 
-    Researchers at the central station have successfully mapped an extraordinary crystalline molecular structural interface. This discovery changes our understanding of telemetry modules completely.
-
-    [6/8/2026 4:41 PM] Kaveh:
-    کشف ساختار ماتریس کریستالی پیشرفته در آزمایشگاه
-
-    محققان در ایستگاه مرکزی موفق به نقشه‌برداری از یک رابط ساختاری مولکولی کریستالی فوق‌العاده شدند. این کشف درک ما را از ماژول‌های تله‌متری کاملاً تغییر می‌دهد.
+    The engineering framework has updated the execution parameters to comply with current software standards. All legacy modules have been completely decommissioned.
     """
 
     execute_text_pipeline(mock_plain_text_paste)

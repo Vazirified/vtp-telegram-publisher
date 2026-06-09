@@ -57,10 +57,7 @@ def get_gemini_api_token(cached_profile):
     return api_key
 
 def select_operational_model(cached_profile):
-    """
-    Dynamically queries Google's API for live models, filters for active
-    text-generation clusters, and constructs an up-to-date choice menu.
-    """
+    """Dynamically queries Google's API for live models and constructs choices menu."""
     last_model = cached_profile.get("last_used_model", "gemini-1.5-flash")
     api_token = cached_profile.get("gemini_api_key")
 
@@ -125,7 +122,7 @@ def extract_target_languages():
         return ["en"]
 
 def execute_text_pipeline(raw_payload: str) -> str:
-    """Sanitizes input, runs dynamic model routing, fires API request, and commits MDs."""
+    """Sanitizes inputs, runs dynamic translation matrices, and slugifies output directories."""
     clean_text = sanitize_clipboard_text(raw_payload)
     if not clean_text:
         print("[ERROR] Input text payload resolved to empty string after serialization pass.")
@@ -142,7 +139,6 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
     client = genai.Client(api_key=api_token)
 
-    # CRITICAL FIX: Explicitly defined strict JSON dictionary mapping schema rules
     system_instruction = (
         f"You are an expert multilingual content translation engine. Your task is to process incoming text data "
         f"and output translations matching this target language array: {target_languages}.\n\n"
@@ -153,8 +149,10 @@ def execute_text_pipeline(raw_payload: str) -> str:
         f"3. If English ('en') text is missing from the input, generate it first to act as the primary master reference.\n"
         f"4. For any target languages in the requested array that are missing from the input text, translate the English "
         f"headline and body into that target language, strictly maintaining the structural split rule.\n"
-        f"5. CRITICAL: The root of your output MUST be a JSON Object (dictionary), NOT a JSON Array (list). "
-        f"The primary dictionary keys must be the lowercase language strings (e.g., 'en', 'fa').\n\n"
+        f"5. LANGUAGE SPECIAL RULE: The key code 'ckb' explicitly demands Central Kurdish (Sorani dialect) "
+        f"written purely in the Arabic/Perso-Arabic script layout alphabet. Do NOT use Latin characters for 'ckb'.\n"
+        f"6. CRITICAL: The root of your output MUST be a JSON Object (dictionary), NOT a JSON Array (list). "
+        f"The primary dictionary keys must be the lowercase language strings (e.g., 'en', 'fa', 'ckb').\n\n"
         f"Expected Schema Layout Format:\n"
         f"{{\n"
         f"  \"en\": {{\n"
@@ -178,19 +176,14 @@ def execute_text_pipeline(raw_payload: str) -> str:
         )
         parsed_payload = json.loads(response.text)
 
-        # DEFENSIVE HYBRID LAYER: If the AI ignores structural rules and outputs a list, normalize it instantly.
+        # Structural defensive layout safety handler
         if isinstance(parsed_payload, list):
             normalized_dict = {}
             for block in parsed_payload:
                 if isinstance(block, dict):
-                    # Handle structure variant A: {"language": "en", "headline": "...", "body": "..."}
                     if "language" in block:
                         lang_key = str(block["language"]).lower()
-                        normalized_dict[lang_key] = {
-                            "headline": block.get("headline", ""),
-                            "body": block.get("body", "")
-                        }
-                    # Handle structure variant B: {"en": {"headline": "...", "body": "..."}}
+                        normalized_dict[lang_key] = {"headline": block.get("headline", ""), "body": block.get("body", "")}
                     else:
                         for k, v in block.items():
                             if isinstance(v, dict) and ("headline" in v or "body" in v):
@@ -201,12 +194,23 @@ def execute_text_pipeline(raw_payload: str) -> str:
         print(f"[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
         return None
 
-    # Step 5: Write out clean, human-readable Markdown Files in Timestamp Session Folder
+    # Step 5: Format the English headline into a human-readable folder slug string
+    en_node = parsed_payload.get("en", {})
+    en_headline = en_node.get("headline", "untitled-post")
+
+    # Process text layout into clean URL-safe dash formatting
+    slug = en_headline.lower()
+    slug = re.sub(r'[^a-z0-9\s-]', '', slug)  # Drop special characters/punctuation
+    slug = re.sub(r'[\s-]+', '-', slug)        # Map whitespace sequences down into single dashes
+    slug = slug.strip('-')                     # Clear off dangling boundaries
+
     timestamp = datetime.datetime.now().strftime("session_%Y%m%d_%H%M%S")
-    session_directory = os.path.join(WORKSPACE_DIR, timestamp)
+    folder_name = f"{timestamp}_{slug}" if slug else timestamp
+
+    session_directory = os.path.join(WORKSPACE_DIR, folder_name)
     os.makedirs(session_directory, exist_ok=True)
 
-    print(f"\n[+] Committing sole source-of-truth entries to: _workspace/{timestamp}/")
+    print(f"\n[+] Committing sole source-of-truth entries to: _workspace/{folder_name}/")
     for lang_code, content in parsed_payload.items():
         if not isinstance(content, dict):
             continue
@@ -232,5 +236,4 @@ if __name__ == "__main__":
 
     The system architecture has been updated to fully decouple the Google API client layer from static models. The model selection layout is now entirely live and fully autonomous.
     """
-
     execute_text_pipeline(mock_plain_text_paste)

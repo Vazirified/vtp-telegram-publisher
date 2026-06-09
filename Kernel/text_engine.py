@@ -223,4 +223,16 @@ def execute_text_pipeline(raw_payload: str) -> str:
         with open(md_file_path, "w", encoding="utf-8") as md_out:
             md_out.write(f"# {headline}\n\n{body}\n")
 
-        print(f"  └─ Generated: {md_file_name}
+        print(f" -> Generated: {md_file_name} [OK]")
+
+    print("\n[SUCCESS] Dynamic text processing core run complete.")
+    return session_directory
+
+if __name__ == "__main__":
+    mock_plain_text_paste = """
+    [6/9/2026 3:15 PM] Kaveh:
+    Unified Dynamic Engine Successfully Implemented
+
+    The system architecture has been updated to fully decouple the Google API client layer from static models. The model selection layout is now entirely live and fully autonomous.
+    """
+    execute_text_pipeline(mock_plain_text_paste)

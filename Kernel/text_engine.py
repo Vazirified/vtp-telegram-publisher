@@ -40,35 +40,6 @@ def save_gemini_credentials(api_key, model_name):
     with open(GEMINI_KEYS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-def select_operational_model(cached_profile):
-    """
-    Displays an interactive terminal menu allowing operators to dynamically
-    switch model clusters or press enter to reuse the last verified profile.
-    """
-    last_model = cached_profile.get("last_used_model", "gemini-1.5-flash")
-
-    # Map friendly options to official Google API model identifiers
-    model_matrix = {
-        "1": "gemini-2.5-flash",
-        "2": "gemini-1.5-flash",
-        "3": "gemini-1.5-pro"
-    }
-
-    print("\n========================================================")
-    print("  GEMINI INTELLIGENCE CLUSTER ROUTER")
-    print("========================================================")
-    print("  [1] Gemini 2.5 Flash  (High Speed - Cutting Edge)")
-    print("  [2] Gemini 1.5 Flash  (High Capacity - Stable Workhorse)")
-    print("  [3] Gemini 1.5 Pro    (Deep Reasoning - Complex Translation)")
-    print(f"  [Enter] Reuse Last Working Default ({last_model})")
-    print("========================================================")
-
-    choice = input("[?] Select engine target lane [1-3]: ").strip()
-
-    selected_model = model_matrix.get(choice, last_model)
-    print(f"[OK] Pipeline routing locked to engine target: {selected_model}\n")
-    return selected_model
-
 def get_gemini_api_token(cached_profile):
     """Guarantees token acquisition gate validation loops."""
     api_key = cached_profile.get("gemini_api_key")
@@ -84,6 +55,60 @@ def get_gemini_api_token(cached_profile):
         exit(1)
 
     return api_key
+
+def select_operational_model(cached_profile):
+    """
+    Dynamically queries Google's API for live models, filters for active
+    text-generation clusters, and constructs an up-to-date choice menu.
+    """
+    last_model = cached_profile.get("last_used_model", "gemini-1.5-flash")
+    api_token = cached_profile.get("gemini_api_key")
+
+    if not api_token:
+        return last_model
+
+    print("\n[~] Querying Google API Gateway for live intelligence clusters...")
+    try:
+        client = genai.Client(api_key=api_token)
+        live_models = []
+
+        # Pull live records from Google's registry
+        for model_meta in client.models.list():
+            # FILTER 1: Only look at user-facing Gemini variations
+            if "gemini" in model_meta.name.lower():
+                # FILTER 2: Exclude utility tools (vision-only, embedding, audio streams)
+                if any(bad_tag in model_meta.name.lower() for bad_tag in ["embedding", "vision", "live", "audio", "search"]):
+                    continue
+                # FILTER 3: Enforce text content capability
+                if "generateContent" in model_meta.supported_actions:
+                    clean_name = model_meta.name.split("/")[-1]
+                    if clean_name not in live_models:
+                        live_models.append(clean_name)
+
+        # Sort models alphabetically so newer variations group together logically
+        live_models.sort()
+
+    except Exception as e:
+        print(f"[!] Warning: Unable to poll live registry ({e}). Defaulting to offline profile.")
+        return last_model
+
+    # Build the dynamic choice matrix mapping index integers to names
+    model_matrix = {str(i + 1): name for i, name in enumerate(live_models)}
+
+    print("\n========================================================")
+    print("  DYNAMIC GEMINI INTELLIGENCE REPOSITORY")
+    print("========================================================")
+    for index, name in model_matrix.items():
+        display_name = name.replace("-", " ").title()
+        print(f"  [{index}] {display_name} ({name})")
+    print(f"  [Enter] Reuse Last Verified Default ({last_model})")
+    print("========================================================")
+
+    choice = input("[?] Select engine target lane: ").strip()
+
+    selected_model = model_matrix.get(choice, last_model)
+    print(f"[OK] Pipeline routing locked to engine target: {selected_model}\n")
+    return selected_model
 
 def sanitize_clipboard_text(raw_input_text: str) -> str:
     """Strips raw usernames and timestamps from the raw copy paste text."""
@@ -112,12 +137,15 @@ def execute_text_pipeline(raw_payload: str) -> str:
         print("[ERROR] Input text payload resolved to empty string after serialization pass.")
         return None
 
-    # Step 1: Manage credentials and display sticky model menu
+    # Step 1: Initialize credentials and pass keys safely
     cached_profile = load_gemini_credentials()
     api_token = get_gemini_api_token(cached_profile)
+
+    # Inject token into memory to ensure first-run dynamic check succeeds
+    cached_profile["gemini_api_key"] = api_token
     active_model = select_operational_model(cached_profile)
 
-    # Commit selection state to local cache configuration
+    # Commit changes permanently to disk
     save_gemini_credentials(api_token, active_model)
 
     target_languages = extract_target_languages()
@@ -156,7 +184,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
         print(f"[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
         return None
 
-    # Step 5: Write out clean, human-readable Markdown Files in Timestamp Session Folder
+    # Step 2: Write out clean, human-readable Markdown Files in Timestamp Session Folder
     timestamp = datetime.datetime.now().strftime("session_%Y%m%d_%H%M%S")
     session_directory = os.path.join(WORKSPACE_DIR, timestamp)
     os.makedirs(session_directory, exist_ok=True)
@@ -180,9 +208,9 @@ def execute_text_pipeline(raw_payload: str) -> str:
 if __name__ == "__main__":
     mock_plain_text_paste = """
     [6/9/2026 3:15 PM] Kaveh:
-    Unified Core Environment Successfully Implemented
+    Unified Dynamic Engine Successfully Implemented
 
-    The engineering framework has updated the execution parameters to comply with current software standards. All legacy modules have been completely decommissioned.
+    The system architecture has been updated to fully decouple the Google API client layer from static models. The model selection layout is now entirely live and fully autonomous.
     """
 
     execute_text_pipeline(mock_plain_text_paste)

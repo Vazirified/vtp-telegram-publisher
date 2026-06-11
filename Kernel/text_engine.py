@@ -137,7 +137,12 @@ def execute_text_pipeline(raw_payload: str) -> str:
     save_gemini_credentials(api_token, active_model)
     target_languages = extract_target_languages()
 
-    client = genai.Client(api_key=api_token)
+    # Initialize the GenAI Client with a strict 30-second network timeout guard
+    # (prevents infinite terminal hangs if a low-tier model cluster stalls)
+    client = genai.Client(
+        api_key=api_token,
+        http_options=types.HttpOptions(timeout=30 * 1000) # Value in milliseconds
+    )
 
     system_instruction = (
         f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations matching this target language array: {target_languages}.\n\n"

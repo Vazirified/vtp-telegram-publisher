@@ -79,23 +79,26 @@ def prompt_layout_config(channel_key, existing_layout=None):
     layout["canvas_size"] = [1000, 1000]
 
     print("\nSelect Canvas Preset Profile:")
-    print("  [1] Standard Top Frame    (1000x680 area with smart crop)")
-    print("  [2] Slim Top Frame        (1000x655 area with smart crop)")
-    print("  [3] Extended Top Frame    (1000x780 area with smart crop)")
-    print("  [4] Full-Bleed Background  (1000x1000 full coverage layout)")
-    print("  [5] Custom Coordinates Manual Override")
-    preset_choice = input("[?] Select baseline preset [1-5]: ").strip()
+    print("  [1] Arabic TV & Broker              (975x760 area with smart crop)")
+    print("  [2] Persian Teampro                 (980x660 area with smart crop)")
+    print("  [3] Persian Broker & Kurdish Broker (1000x676 area with smart crop)")
+    print("  [4] English Broker                  (1000x1000 full coverage layout)")
+    print("  [5] Persian TV                      (1000x1000 full coverage layout)")
+    print("  [6] Custom Coordinates Manual Override")
+    preset_choice = input("[?] Select baseline preset [1-6]: ").strip()
 
     raw_placement = layout.get("raw_image_placement", {})
     raw_placement["resize_mode"] = "cover"
 
     if preset_choice == "1":
-        raw_placement.update({"x": 0, "y": 0, "width": 1000, "height": 680})
+        raw_placement.update({"x": 14, "y": 14, "width": 975, "height": 760})
     elif preset_choice == "2":
-        raw_placement.update({"x": 0, "y": 0, "width": 1000, "height": 655})
+        raw_placement.update({"x": 10, "y": 10, "width": 980, "height": 660})
     elif preset_choice == "3":
-        raw_placement.update({"x": 0, "y": 0, "width": 1000, "height": 780})
+        raw_placement.update({"x": 0, "y": 0, "width": 1000, "height": 676})
     elif preset_choice == "4":
+        raw_placement.update({"x": 0, "y": 0, "width": 1000, "height": 465})
+    elif preset_choice == "5":
         raw_placement.update({"x": 0, "y": 0, "width": 1000, "height": 1000})
     else:
         print("\nEnter custom background boundaries (in pixels):")
@@ -111,10 +114,69 @@ def prompt_layout_config(channel_key, existing_layout=None):
 
     safe_area = layout.get("headline_safe_area", {})
     print("\nConfigure Headline Safe Area Boundary Box:")
-    safe_area["x_start"] = int(input(f"    Bounding Box X Start [Current: {safe_area.get('x_start', 50)}]: ") or safe_area.get("x_start", 50))
-    safe_area["y_start"] = int(input(f"    Bounding Box Y Start [Current: {safe_area.get('y_start', 750)}]: ") or safe_area.get("y_start", 750))
-    safe_area["width"] = int(input(f"    Bounding Box Width   [Current: {safe_area.get('width', 900)}]: ") or safe_area.get("width", 900))
-    safe_area["max_height"] = int(input(f"    Bounding Box Max H   [Current: {safe_area.get('max_height', 200)}]: ") or safe_area.get("max_height", 200))
+    print("  [1] Persian Broker")
+    print("  [2] Persian TeamPro")
+    print("  [3] Persian TV")
+    print("  [4] Arabic Broker")
+    print("  [5] English Broker")
+    print("  [6] Kurdish Broker")
+    print("  [7] Arabic TV")
+    print("  [8] Custom Manual Coordinates...")
+    # FIXED: Updated prompt to reflect 8 options instead of 3
+    area_choice = input("[?] Choose safe area profile [1-8]: ").strip()
+
+    # Safety fallbacks
+    canvas_w = layout.get("width", 1000)
+    canvas_h = layout.get("height", 1000)
+
+    if area_choice == "1":
+        safe_area["x_start"] = 48
+        safe_area["y_start"] = 710
+        safe_area["width"] = 905
+        safe_area["max_height"] = 250
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    elif area_choice == "2":
+        safe_area["x_start"] = 36
+        safe_area["y_start"] = 700
+        safe_area["width"] = 930
+        safe_area["max_height"] = 195
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    elif area_choice == "3":
+        safe_area["x_start"] = 60
+        safe_area["y_start"] = 780
+        safe_area["width"] = 880
+        safe_area["max_height"] = 185
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    elif area_choice == "4":
+        safe_area["x_start"] = 39
+        safe_area["y_start"] = 795
+        safe_area["width"] = 920
+        safe_area["max_height"] = 120
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    elif area_choice == "5":
+        safe_area["x_start"] = 54
+        safe_area["y_start"] = 690
+        safe_area["width"] = 890
+        safe_area["max_height"] = 210
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    elif area_choice == "6":
+        safe_area["x_start"] = 60
+        safe_area["y_start"] = 700
+        safe_area["width"] = 880
+        safe_area["max_height"] = 270
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    elif area_choice == "7":
+        safe_area["x_start"] = 50
+        safe_area["y_start"] = 790
+        safe_area["width"] = 905
+        safe_area["max_height"] = 190
+        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
+    else:
+        print("\n[i] Enter custom coordinates in pixels:")
+        safe_area["x_start"] = int(input(f"    Bounding Box X Start [Current: {safe_area.get('x_start', 50)}]: ") or safe_area.get("x_start", 50))
+        safe_area["y_start"] = int(input(f"    Bounding Box Y Start [Current: {safe_area.get('y_start', 750)}]: ") or safe_area.get("y_start", 750))
+        safe_area["width"] = int(input(f"    Bounding Box Width   [Current: {safe_area.get('width', 900)}]: ") or safe_area.get("width", 900))
+        safe_area["max_height"] = int(input(f"    Bounding Box Max H   [Current: {safe_area.get('max_height', 200)}]: ") or safe_area.get("max_height", 200))
 
     print("\nConfigure Typography Profile:")
     default_font = f"_config/fonts/{channel_key}_font.ttf"
@@ -123,10 +185,31 @@ def prompt_layout_config(channel_key, existing_layout=None):
     safe_area["font_size"] = int(input(f"    Base Font Size Pt     [Current: {safe_area.get('font_size', 44)}]: ") or safe_area.get("font_size", 44))
     safe_area["font_color"] = input(f"    Hex Font Color Code   [Current: {safe_area.get('font_color', '#FFFFFF')}]: ").strip() or safe_area.get("font_color", "#FFFFFF")
 
-    print("\nSelect Headline Horizontal Alignment Rule:")
-    print("  [1] Left Alignment | [2] Center Alignment | [3] Right Alignment")
-    align_choice = input("[?] Choose layout alignment [1-3]: ").strip()
-    safe_area["alignment"] = "center" if align_choice == "2" else ("right" if align_choice == "3" else "left")
+    # NEW: Font Weight Selection
+    print("\nSelect Font Weight:")
+    print("  [1] Regular | [2] Semi-Bold | [3] Bold")
+    weight_choice = input(f"[?] Choose font weight [1-3] [Current: {safe_area.get('font_weight', 'regular')}]: ").strip()
+    if weight_choice == "1":
+        safe_area["font_weight"] = "regular"
+    elif weight_choice == "2":
+        safe_area["font_weight"] = "semi-bold"
+    elif weight_choice == "3":
+        safe_area["font_weight"] = "bold"
+    else:
+        safe_area["font_weight"] = safe_area.get("font_weight", "regular")
+
+    # REFINED: Text Justification Selection
+    print("\nSelect Text Justification / Alignment:")
+    print("  [1] Left | [2] Center | [3] Right")
+    align_choice = input(f"[?] Choose justification [1-3] [Current: {safe_area.get('alignment', 'left')}]: ").strip()
+    if align_choice == "1":
+        safe_area["alignment"] = "left"
+    elif align_choice == "2":
+        safe_area["alignment"] = "center"
+    elif align_choice == "3":
+        safe_area["alignment"] = "right"
+    else:
+        safe_area["alignment"] = safe_area.get("alignment", "left")
 
     layout["headline_safe_area"] = safe_area
     return layout

@@ -122,7 +122,6 @@ def prompt_layout_config(channel_key, existing_layout=None):
     print("  [6] Kurdish Broker")
     print("  [7] Arabic TV")
     print("  [8] Custom Manual Coordinates...")
-    # FIXED: Updated prompt to reflect 8 options instead of 3
     area_choice = input("[?] Choose safe area profile [1-8]: ").strip()
 
     # Safety fallbacks
@@ -179,13 +178,13 @@ def prompt_layout_config(channel_key, existing_layout=None):
         safe_area["max_height"] = int(input(f"    Bounding Box Max H   [Current: {safe_area.get('max_height', 200)}]: ") or safe_area.get("max_height", 200))
 
     print("\nConfigure Typography Profile:")
-    default_font = f"_config/fonts/{channel_key}_font.ttf"
+    default_font = "_config/fonts/Dana-Medium.ttf"
     font_input = input(f"    Font Path (.ttf file) [Current: {safe_area.get('font_path', default_font)}]: ").strip()
     safe_area["font_path"] = font_input if font_input else safe_area.get("font_path", default_font)
     safe_area["font_size"] = int(input(f"    Base Font Size Pt     [Current: {safe_area.get('font_size', 44)}]: ") or safe_area.get("font_size", 44))
     safe_area["font_color"] = input(f"    Hex Font Color Code   [Current: {safe_area.get('font_color', '#FFFFFF')}]: ").strip() or safe_area.get("font_color", "#FFFFFF")
 
-    # NEW: Font Weight Selection
+    # Font Weight Selection
     print("\nSelect Font Weight:")
     print("  [1] Regular | [2] Semi-Bold | [3] Bold")
     weight_choice = input(f"[?] Choose font weight [1-3] [Current: {safe_area.get('font_weight', 'regular')}]: ").strip()
@@ -198,10 +197,10 @@ def prompt_layout_config(channel_key, existing_layout=None):
     else:
         safe_area["font_weight"] = safe_area.get("font_weight", "regular")
 
-    # REFINED: Text Justification Selection
+    # Text Justification Selection
     print("\nSelect Text Justification / Alignment:")
     print("  [1] Left | [2] Center | [3] Right")
-    align_choice = input(f"[?] Choose justification [1-3] [Current: {safe_area.get('alignment', 'left')}]: ").strip()
+    align_choice = input(f"[?] Choose justification [1-3] [Current: {safe_area.get('alignment', 'center')}]: ").strip()
     if align_choice == "1":
         safe_area["alignment"] = "left"
     elif align_choice == "2":
@@ -209,7 +208,7 @@ def prompt_layout_config(channel_key, existing_layout=None):
     elif align_choice == "3":
         safe_area["alignment"] = "right"
     else:
-        safe_area["alignment"] = safe_area.get("alignment", "left")
+        safe_area["alignment"] = safe_area.get("alignment", "center")
 
     layout["headline_safe_area"] = safe_area
     return layout

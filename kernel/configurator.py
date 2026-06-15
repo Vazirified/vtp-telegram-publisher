@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 
 # 1. Absolute path mapping with clean lowercase structures
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +46,53 @@ def save_config(config_data):
         print("[OK] Configuration state successfully committed.")
     except IOError as e:
         print(f"[ERROR] Disk write failure: {e}")
+
+def choose_asset_file(relative_dir, extensions, asset_name, default_fallback):
+    """Dynamically lists available assets and allows file selection or external import."""
+    abs_dir = os.path.join(PROJECT_ROOT, relative_dir)
+    if not os.path.exists(abs_dir):
+        os.makedirs(abs_dir)
+
+    files = [f for f in os.listdir(abs_dir) if f.lower().endswith(tuple(extensions))]
+
+    print(f"\nSelect {asset_name}:")
+    if not files:
+        print(f"  [i] No files found in {relative_dir}/")
+    else:
+        for i, f in enumerate(files, 1):
+            print(f"  [{i}] {f}")
+
+    custom_idx = len(files) + 1
+    print(f"  [{custom_idx}] Provide custom path (will be automatically imported to {relative_dir}/)")
+
+    choice = input(f"[?] Choose an option [1-{custom_idx}] [Current/Default: {default_fallback}]: ").strip()
+
+    if not choice:
+        return default_fallback
+
+    if choice.isdigit():
+        idx = int(choice)
+        if 1 <= idx <= len(files):
+            return f"{relative_dir}/{files[idx-1]}"
+        elif idx == custom_idx:
+            custom_path = input(f"    -> Enter full absolute path to your file: ").strip()
+            # Strip accidental quote marks from drag-and-drop terminal pasting
+            custom_path = custom_path.strip("\"'")
+            if os.path.exists(custom_path):
+                filename = os.path.basename(custom_path)
+                dest_path = os.path.join(abs_dir, filename)
+                try:
+                    shutil.copy2(custom_path, dest_path)
+                    print(f"    [+] Successfully imported '{filename}' into {relative_dir}/")
+                    return f"{relative_dir}/{filename}"
+                except Exception as e:
+                    print(f"    [ERROR] Failed to copy file: {e}. Falling back to default.")
+                    return default_fallback
+            else:
+                print(f"    [!] File not found at '{custom_path}'. Falling back to default.")
+                return default_fallback
+
+    return default_fallback
 
 def configure_global_catch_all():
     """Dedicated management wizard for handling the review gate identity."""
@@ -108,9 +156,15 @@ def prompt_layout_config(channel_key, existing_layout=None):
         raw_placement["height"] = int(input("    Target Height: ") or 700)
 
     layout["raw_image_placement"] = raw_placement
-    default_overlay = f"_config/templates/{channel_key}_overlay.png"
-    overlay_input = input(f"[?] Branding Overlay PNG Path [Default: {default_overlay}]: ").strip()
-    layout["template_overlay_path"] = overlay_input if overlay_input else default_overlay
+
+    # NEW DYNAMIC MENU: Template Overlay Selection
+    default_overlay = layout.get("template_overlay_path", f"_config/templates/{channel_key}_overlay.png")
+    layout["template_overlay_path"] = choose_asset_file(
+        "_config/templates",
+        ['.png', '.jpg', '.jpeg'],
+        "Branding Overlay Template",
+        default_overlay
+    )
 
     safe_area = layout.get("headline_safe_area", {})
     print("\nConfigure Headline Safe Area Boundary Box:")
@@ -178,10 +232,17 @@ def prompt_layout_config(channel_key, existing_layout=None):
         safe_area["max_height"] = int(input(f"    Bounding Box Max H   [Current: {safe_area.get('max_height', 200)}]: ") or safe_area.get("max_height", 200))
 
     print("\nConfigure Typography Profile:")
-    default_font = "_config/fonts/Dana-Medium.ttf"
-    font_input = input(f"    Font Path (.ttf file) [Current: {safe_area.get('font_path', default_font)}]: ").strip()
-    safe_area["font_path"] = font_input if font_input else safe_area.get("font_path", default_font)
-    safe_area["font_size"] = int(input(f"    Base Font Size Pt     [Current: {safe_area.get('font_size', 44)}]: ") or safe_area.get("font_size", 44))
+
+    # NEW DYNAMIC MENU: Font Selection
+    default_font = safe_area.get("font_path", "_config/fonts/Dana-Medium.ttf")
+    safe_area["font_path"] = choose_asset_file(
+        "_config/fonts",
+        ['.ttf', '.otf'],
+        "Typography Font File",
+        default_font
+    )
+
+    safe_area["font_size"] = int(input(f"\n    Base Font Size Pt     [Current: {safe_area.get('font_size', 44)}]: ") or safe_area.get("font_size", 44))
     safe_area["font_color"] = input(f"    Hex Font Color Code   [Current: {safe_area.get('font_color', '#FFFFFF')}]: ").strip() or safe_area.get("font_color", "#FFFFFF")
 
     # Font Weight Selection

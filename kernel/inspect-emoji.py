@@ -25,21 +25,36 @@ async def main():
     try:
         channel = await client.get_entity(target)
 
-        # Safely resolve name whether it's a Channel (title) or a User (first_name)
         entity_name = getattr(channel, 'title', None) or getattr(channel, 'first_name', 'Saved Messages')
-        print(f"[~] Fetching recent messages from {entity_name}...")
+        print(f"[~] Fetching recent messages from {entity_name}...\n")
 
         async for message in client.iter_messages(channel, limit=10):
             if message.text:
                 preview = message.text[:40].replace('\n', ' ')
-                print(f"\n[ID: {message.id}] {preview}...")
+                print(f"==================================================")
+                print(f"[Message ID: {message.id}] Preview: {preview}...")
 
+                # 1. Directly extract how Telethon parses custom emojis within text strings
+                if message.entities:
+                    print(f"  --> Ready Markdown text string:")
+                    print(f"      {message.text_markdown}")
+                    print(f"  --> Ready HTML text string:")
+                    print(f"      {message.text_html}")
+
+                # 2. Extract custom emoji document IDs from reactions
                 if message.reactions:
+                    print("  --> Reactions found:")
                     for r in message.reactions.results:
-                        emoji = r.reaction.emoticon if hasattr(r.reaction, 'emoticon') else "Custom"
-                        print(f"  -> {emoji} ({r.count})")
+                        if hasattr(r.reaction, 'emoticon') and r.reaction.emoticon:
+                            print(f"      Standard Emoji: {r.reaction.emoticon} (Count: {r.count})")
+                        elif hasattr(r.reaction, 'document_id') and r.reaction.document_id:
+                            doc_id = r.reaction.document_id
+                            print(f"      Custom/Animated Emoji ID: {doc_id} (Count: {r.count})")
+                            print(f"      Copy-Paste Markdown tag: ![🌐](tg://emoji?id={doc_id})")
+                            print(f"      Copy-Paste HTML tag:     <tg-emoji emoji-id=\"{doc_id}\">🌐</tg-emoji>")
                 else:
-                    print("  -> No reactions found.")
+                    print("  --> No reactions found.")
+                print(f"==================================================\n")
 
     except Exception as e:
         print(f"[ERROR] Could not inspect channel: {e}")

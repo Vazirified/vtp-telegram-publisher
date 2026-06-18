@@ -2,24 +2,29 @@ import os
 import json
 import shutil
 
-# 1. Absolute path mapping with clean lowercase structures
+# 1. Project-wide absolute path mapping aligned with auth_manager
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
+CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
+CONFIG_DIR = os.path.join(PROJECT_ROOT, "_config")
+WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "_workspace")
+CONFIG_FILE = os.path.join(CONFIG_DIR, "channels.json")
+
 REQUIRED_DIRS = [
-    os.path.join(PROJECT_ROOT, "_config"),
-    os.path.join(PROJECT_ROOT, "_config", "templates"),
-    os.path.join(PROJECT_ROOT, "_config", "fonts"),
-    os.path.join(PROJECT_ROOT, "_workspace"),
-    os.path.join(PROJECT_ROOT, "_credentials")
+    CONFIG_DIR,
+    os.path.join(CONFIG_DIR, "templates"),
+    os.path.join(CONFIG_DIR, "fonts"),
+    WORKSPACE_DIR,
+    CREDENTIALS_DIR
 ]
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
 
 def bootstrap_environment():
-    """Verifies and structures the folder workspace environment."""
+    """Verifies and structures the folder workspace environment cleanly."""
     for directory in REQUIRED_DIRS:
         if not os.path.exists(directory):
             os.makedirs(directory)
+            print(f"[+] Created directory: {directory}")
 
 def load_config():
     """Reads configuration payload from disk. Enforces foundational schema maps."""
@@ -29,7 +34,6 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Guarantee backward compatibility keys exist
             if "catch_all_channel" not in data:
                 data["catch_all_channel"] = None
             if "channels" not in data:
@@ -51,7 +55,7 @@ def choose_asset_file(relative_dir, extensions, asset_name, default_fallback):
     """Dynamically lists available assets and allows file selection or external import."""
     abs_dir = os.path.join(PROJECT_ROOT, relative_dir)
     if not os.path.exists(abs_dir):
-        os.makedirs(abs_dir)
+        os.makedirs(abs_dir, exist_ok=True)
 
     files = [f for f in os.listdir(abs_dir) if f.lower().endswith(tuple(extensions))]
 
@@ -76,7 +80,6 @@ def choose_asset_file(relative_dir, extensions, asset_name, default_fallback):
             return f"{relative_dir}/{files[idx-1]}"
         elif idx == custom_idx:
             custom_path = input(f"    -> Enter full absolute path to your file: ").strip()
-            # Strip accidental quote marks from drag-and-drop terminal pasting
             custom_path = custom_path.strip("\"'")
             if os.path.exists(custom_path):
                 filename = os.path.basename(custom_path)
@@ -157,7 +160,6 @@ def prompt_layout_config(channel_key, existing_layout=None):
 
     layout["raw_image_placement"] = raw_placement
 
-    # NEW DYNAMIC MENU: Template Overlay Selection
     default_overlay = layout.get("template_overlay_path", f"_config/templates/{channel_key}_overlay.png")
     layout["template_overlay_path"] = choose_asset_file(
         "_config/templates",
@@ -178,52 +180,41 @@ def prompt_layout_config(channel_key, existing_layout=None):
     print("  [8] Custom Manual Coordinates...")
     area_choice = input("[?] Choose safe area profile [1-8]: ").strip()
 
-    # Safety fallbacks
-    canvas_w = layout.get("width", 1000)
-    canvas_h = layout.get("height", 1000)
-
     if area_choice == "1":
         safe_area["x_start"] = 48
         safe_area["y_start"] = 710
         safe_area["width"] = 905
         safe_area["max_height"] = 250
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     elif area_choice == "2":
         safe_area["x_start"] = 36
         safe_area["y_start"] = 700
         safe_area["width"] = 930
         safe_area["max_height"] = 195
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     elif area_choice == "3":
         safe_area["x_start"] = 60
         safe_area["y_start"] = 780
         safe_area["width"] = 880
         safe_area["max_height"] = 185
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     elif area_choice == "4":
         safe_area["x_start"] = 39
         safe_area["y_start"] = 795
         safe_area["width"] = 920
         safe_area["max_height"] = 120
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     elif area_choice == "5":
         safe_area["x_start"] = 54
         safe_area["y_start"] = 690
         safe_area["width"] = 890
         safe_area["max_height"] = 210
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     elif area_choice == "6":
         safe_area["x_start"] = 60
         safe_area["y_start"] = 700
         safe_area["width"] = 880
         safe_area["max_height"] = 270
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     elif area_choice == "7":
         safe_area["x_start"] = 50
         safe_area["y_start"] = 790
         safe_area["width"] = 905
         safe_area["max_height"] = 190
-        print(f"    -> Preset Applied: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
     else:
         print("\n[i] Enter custom coordinates in pixels:")
         safe_area["x_start"] = int(input(f"    Bounding Box X Start [Current: {safe_area.get('x_start', 50)}]: ") or safe_area.get("x_start", 50))
@@ -231,9 +222,8 @@ def prompt_layout_config(channel_key, existing_layout=None):
         safe_area["width"] = int(input(f"    Bounding Box Width   [Current: {safe_area.get('width', 900)}]: ") or safe_area.get("width", 900))
         safe_area["max_height"] = int(input(f"    Bounding Box Max H   [Current: {safe_area.get('max_height', 200)}]: ") or safe_area.get("max_height", 200))
 
-    print("\nConfigure Typography Profile:")
+    print(f"    -> Safe Area Set: {safe_area['width']}x{safe_area['max_height']} at ({safe_area['x_start']}, {safe_area['y_start']})")
 
-    # NEW DYNAMIC MENU: Font Selection
     default_font = safe_area.get("font_path", "_config/fonts/Dana-Medium.ttf")
     safe_area["font_path"] = choose_asset_file(
         "_config/fonts",
@@ -245,31 +235,21 @@ def prompt_layout_config(channel_key, existing_layout=None):
     safe_area["font_size"] = int(input(f"\n    Base Font Size Pt     [Current: {safe_area.get('font_size', 44)}]: ") or safe_area.get("font_size", 44))
     safe_area["font_color"] = input(f"    Hex Font Color Code   [Current: {safe_area.get('font_color', '#FFFFFF')}]: ").strip() or safe_area.get("font_color", "#FFFFFF")
 
-    # Font Weight Selection
     print("\nSelect Font Weight:")
     print("  [1] Regular | [2] Semi-Bold | [3] Bold")
     weight_choice = input(f"[?] Choose font weight [1-3] [Current: {safe_area.get('font_weight', 'regular')}]: ").strip()
-    if weight_choice == "1":
-        safe_area["font_weight"] = "regular"
-    elif weight_choice == "2":
-        safe_area["font_weight"] = "semi-bold"
-    elif weight_choice == "3":
-        safe_area["font_weight"] = "bold"
-    else:
-        safe_area["font_weight"] = safe_area.get("font_weight", "regular")
+    if weight_choice == "1": safe_area["font_weight"] = "regular"
+    elif weight_choice == "2": safe_area["font_weight"] = "semi-bold"
+    elif weight_choice == "3": safe_area["font_weight"] = "bold"
+    else: safe_area["font_weight"] = safe_area.get("font_weight", "regular")
 
-    # Text Justification Selection
     print("\nSelect Text Justification / Alignment:")
     print("  [1] Left | [2] Center | [3] Right")
     align_choice = input(f"[?] Choose justification [1-3] [Current: {safe_area.get('alignment', 'center')}]: ").strip()
-    if align_choice == "1":
-        safe_area["alignment"] = "left"
-    elif align_choice == "2":
-        safe_area["alignment"] = "center"
-    elif align_choice == "3":
-        safe_area["alignment"] = "right"
-    else:
-        safe_area["alignment"] = safe_area.get("alignment", "center")
+    if align_choice == "1": safe_area["alignment"] = "left"
+    elif align_choice == "2": safe_area["alignment"] = "center"
+    elif align_choice == "3": safe_area["alignment"] = "right"
+    else: safe_area["alignment"] = safe_area.get("alignment", "center")
 
     layout["headline_safe_area"] = safe_area
     return layout

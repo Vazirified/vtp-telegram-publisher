@@ -1,62 +1,49 @@
-import os
-import json
-from telethon import TelegramClient
-
-# --- PATH CONFIGURATION ---
-# Assumes this script is in a subdirectory.
-# If this script is in the root, change to: PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-
-CREDENTIALS_FILE = os.path.join(PROJECT_ROOT, "_credentials", "telegram_api.json")
-SESSION_FILE = os.path.join(PROJECT_ROOT, "_credentials", "user_session")
-
-def get_credentials():
-    """Loads API credentials from the central _credentials/ directory."""
-    if not os.path.exists(CREDENTIALS_FILE):
-        print(f"[ERROR] Configuration file missing at: {CREDENTIALS_FILE}")
-        exit(1)
-
-    with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        return data.get("api_id"), data.get("api_hash")
+import asyncio
+from kernel.auth_manager import get_client
 
 async def main():
-    api_id, api_hash = get_credentials()
+    # 1. Use the shared auth manager to get the client
+    # This will return a TelegramClient configured to look in _credentials/
+    client = get_client()
 
-    # Initialize client using the session path inside _credentials/
-    client = TelegramClient(SESSION_FILE, api_id, api_hash)
+    if not client:
+        print("[!] Cannot proceed without valid credentials.")
+        return
 
     print("[~] Connecting to Telegram...")
+
+    # 2. Start the client
+    # If 'user_session.session' does not exist in _credentials/,
+    # Telethon will trigger an interactive CLI login process here.
     await client.start()
 
     print("[+] Successfully authenticated.")
     print("--- Emoji Inspection Mode ---")
-    print("Enter the name of a public channel/group (e.g., 'durov') to inspect its recent posts.")
-
-    target = input("Channel/Group: ").strip()
+    target = input("Enter channel/group username (e.g., 'durov'): ").strip()
 
     try:
         channel = await client.get_entity(target)
+        print(f"[~] Fetching recent messages from {channel.title}...")
+
         async for message in client.iter_messages(channel, limit=10):
             if message.text:
-                print(f"\n[ID: {message.id}] {message.text[:50]}...")
-                # Inspecting reactions/emojis
+                # Preview text
+                preview = message.text[:40].replace('\n', ' ')
+                print(f"\n[ID: {message.id}] {preview}...")
+
+                # Reaction Inspection Logic
                 if message.reactions:
-                    for reaction in message.reactions.results:
-                        # Extracting emoji or custom reaction
-                        if reaction.reaction.emoticon:
-                            print(f"  -> Found Emoji: {reaction.reaction.emoticon} | Count: {reaction.count}")
-                        elif reaction.reaction.document_id:
-                            print(f"  -> Found Custom Emoji (DocID: {reaction.reaction.document_id}) | Count: {reaction.count}")
+                    for r in message.reactions.results:
+                        emoji = r.reaction.emoticon if hasattr(r.reaction, 'emoticon') else "Custom"
+                        print(f"  -> {emoji} ({r.count})")
                 else:
                     print("  -> No reactions found.")
 
     except Exception as e:
         print(f"[ERROR] Could not inspect channel: {e}")
     finally:
+        # Close the connection cleanly
         await client.disconnect()
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

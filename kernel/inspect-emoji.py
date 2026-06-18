@@ -3,13 +3,11 @@ import sys
 import asyncio
 
 # --- FIX PATH TRAP ---
-# Dynamically add the project root directory to Python's search path
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-# Now Python can see the 'kernel' package perfectly
 from kernel.auth_manager import get_client
 
 async def main():
@@ -22,11 +20,14 @@ async def main():
 
     print("[+] Successfully authenticated.")
     print("--- Emoji Inspection Mode ---")
-    target = input("Enter channel/group username (e.g., 'durov'): ").strip()
+    target = input("Enter channel/group username (or 'me' for Saved Messages): ").strip()
 
     try:
         channel = await client.get_entity(target)
-        print(f"[~] Fetching recent messages from {channel.title}...")
+
+        # Safely resolve name whether it's a Channel (title) or a User (first_name)
+        entity_name = getattr(channel, 'title', None) or getattr(channel, 'first_name', 'Saved Messages')
+        print(f"[~] Fetching recent messages from {entity_name}...")
 
         async for message in client.iter_messages(channel, limit=10):
             if message.text:

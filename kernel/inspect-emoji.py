@@ -1,81 +1,62 @@
 import os
 import json
-from telethon import TelegramClient, events
+from telethon import TelegramClient
 
-# Compute absolute paths relative to project root with lowercase structure
+# --- PATH CONFIGURATION ---
+# Assumes this script is in a subdirectory.
+# If this script is in the root, change to: PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
-KEYS_FILE = os.path.join(CREDENTIALS_DIR, "telegram_keys.json")
-SESSION_FILE = os.path.join(CREDENTIALS_DIR, "inspector_session")
 
-def get_telegram_app_credentials():
-    """
-    Ensures _credentials exists, reads app keys if available,
-    or interviews the user once to save them state-lessly.
-    """
-    if not os.path.exists(CREDENTIALS_DIR):
-        os.makedirs(CREDENTIALS_DIR)
+CREDENTIALS_FILE = os.path.join(PROJECT_ROOT, "_credentials", "telegram_api.json")
+SESSION_FILE = os.path.join(PROJECT_ROOT, "_credentials", "user_session")
 
-    if os.path.exists(KEYS_FILE):
-        try:
-            with open(KEYS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return int(data["api_id"]), data["api_hash"]
-        except (json.JSONDecodeError, KeyError, ValueError, IOError):
-            print("[!] Credentials configuration corrupted. Re-initializing.")
-
-    print("+------------------------------------------------------+")
-    print(":     TELEGRAM APPLICATION DEVELOPER REGISTRATION     :")
-    print("+------------------------------------------------------+")
-    print("[i] To connect to Telegram, you need your App API keys.")
-    print("[i] Get them instantly by logging into: https://my.telegram.org")
-    print("--------------------------------------------------------")
-
-    try:
-        api_id = int(input("[?] Enter your numeric API ID: ").strip())
-        api_hash = input("[?] Enter your alphanumeric API Hash: ").strip()
-    except ValueError:
-        print("[ERROR] API ID must be a number. Execution terminated.")
+def get_credentials():
+    """Loads API credentials from the central _credentials/ directory."""
+    if not os.path.exists(CREDENTIALS_FILE):
+        print(f"[ERROR] Configuration file missing at: {CREDENTIALS_FILE}")
         exit(1)
 
-    with open(KEYS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"api_id": api_id, "api_hash": api_hash}, f, indent=2)
+    with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        return data.get("api_id"), data.get("api_hash")
 
-    print("[OK] Application credentials committed to _credentials/telegram_keys.json")
-    return api_id, api_hash
+async def main():
+    api_id, api_hash = get_credentials()
 
-def main():
-    api_id, api_hash = get_telegram_app_credentials()
-
-    print("\n[-->] Initializing user authorization handshake...")
+    # Initialize client using the session path inside _credentials/
     client = TelegramClient(SESSION_FILE, api_id, api_hash)
 
-    @client.on(events.NewMessage(outgoing=True))
-    async def handler(event):
-        if event.entities:
-            for entity in event.entities:
-                if hasattr(entity, 'document_id'):
-                    print("\n========================================================")
-                    print(f"  [FOUND] Custom Emoji Target Match: {event.raw_text}")
-                    print(f"  [FOUND] Token Value: [eid:{entity.document_id}]")
-                    print("========================================================\n")
+    print("[~] Connecting to Telegram...")
+    await client.start()
 
-    print("\n========================================================")
-    print("  EMOJI INSPECTOR MONITOR RUNNING ACTIVE")
-    print("========================================================")
-    print("  [Instructions]")
-    print("  1. Open your standard Telegram Mobile or Desktop app.")
-    print("  2. Send any Premium Animated Emoji into your Saved Messages.")
-    print("  3. The parsed token will print below instantly.")
-    print("  4. Press Ctrl+C inside this terminal window to stop.")
-    print("========================================================\n")
+    print("[+] Successfully authenticated.")
+    print("--- Emoji Inspection Mode ---")
+    print("Enter the name of a public channel/group (e.g., 'durov') to inspect its recent posts.")
+
+    target = input("Channel/Group: ").strip()
 
     try:
-        client.start()
-        client.run_until_disconnected()
-    except KeyboardInterrupt:
-        print("\n[-->] Intercept listener killed. Returning to system shell.")
+        channel = await client.get_entity(target)
+        async for message in client.iter_messages(channel, limit=10):
+            if message.text:
+                print(f"\n[ID: {message.id}] {message.text[:50]}...")
+                # Inspecting reactions/emojis
+                if message.reactions:
+                    for reaction in message.reactions.results:
+                        # Extracting emoji or custom reaction
+                        if reaction.reaction.emoticon:
+                            print(f"  -> Found Emoji: {reaction.reaction.emoticon} | Count: {reaction.count}")
+                        elif reaction.reaction.document_id:
+                            print(f"  -> Found Custom Emoji (DocID: {reaction.reaction.document_id}) | Count: {reaction.count}")
+                else:
+                    print("  -> No reactions found.")
+
+    except Exception as e:
+        print(f"[ERROR] Could not inspect channel: {e}")
+    finally:
+        await client.disconnect()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

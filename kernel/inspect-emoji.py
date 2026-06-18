@@ -1,5 +1,8 @@
-import os
 import sys
+# Force Python to stop generating __pycache__ folders completely
+sys.dont_write_bytecode = True
+
+import os
 import asyncio
 
 # --- FIX PATH TRAP ---
@@ -9,6 +12,10 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from kernel.auth_manager import get_client
+
+# Correct Telethon modules for exporting formatted text
+from telethon.extensions.markdown import unparse as markdown_unparse
+from telethon.extensions.html import unparse as html_unparse
 
 async def main():
     client = get_client()
@@ -34,12 +41,23 @@ async def main():
                 print(f"==================================================")
                 print(f"[Message ID: {message.id}] Preview: {preview}...")
 
-                # 1. Directly extract how Telethon parses custom emojis within text strings
+                # 1. Properly translate internal message entities back to formatting tags
                 if message.entities:
                     print(f"  --> Ready Markdown text string:")
-                    print(f"      {message.text_markdown}")
+                    try:
+                        md_text = markdown_unparse(message.message, message.entities)
+                        print(f"      {md_text}")
+                    except Exception as e:
+                        print(f"      [Could not unparse Markdown: {e}]")
+
                     print(f"  --> Ready HTML text string:")
-                    print(f"      {message.text_html}")
+                    try:
+                        html_text = html_unparse(message.message, message.entities)
+                        print(f"      {html_text}")
+                    except Exception as e:
+                        print(f"      [Could not unparse HTML: {e}]")
+                else:
+                    print(f"  --> Plain Text (No inner entities): {message.message}")
 
                 # 2. Extract custom emoji document IDs from reactions
                 if message.reactions:

@@ -29,12 +29,19 @@ def extract_markdown_headline(md_file_path):
             if line.strip().startswith("#"): return line.lstrip("#").strip()
     return None
 
-def wrap_text(text, font, max_width, draw):
+def wrap_text(text, font, max_width, draw, is_rtl=False):
     words = text.split()
     lines, current_line = [], []
     for word in words:
         test_line = ' '.join(current_line + [word])
-        if draw.textlength(test_line, font=font) <= max_width:
+
+        # Apply reshaping for accurate width calculation if RTL
+        text_to_measure = test_line
+        if is_rtl:
+            reshaped = arabic_reshaper.reshape(test_line)
+            text_to_measure = get_display(reshaped)
+
+        if draw.textlength(text_to_measure, font=font) <= max_width:
             current_line.append(word)
         else:
             lines.append(' '.join(current_line))
@@ -97,20 +104,43 @@ def render_channel_assets(session_dir=None):
         layout = profile["image_layout"]
         placement = layout["raw_image_placement"]
 
-        # 2. Adaptive Viewport Logic
+        # 2. Adaptive Viewport Logic (Camera Panning & Contain Mode)
         raw_img = Image.open(raw_path).convert("RGBA")
         target_size = (placement["width"], placement["height"])
+        target_w, target_h = target_size
 
         if global_aoi:
-            aoi_box = global_aoi
-            aoi_area = ((aoi_box[2]-aoi_box[0]) * (aoi_box[3]-aoi_box[1])) / (raw_img.width * raw_img.height)
+            # Calculate what percentage of the image the AOI takes up
+            aoi_w = global_aoi[2] - global_aoi[0]
+            aoi_h = global_aoi[3] - global_aoi[1]
+            aoi_area_ratio = (aoi_w * aoi_h) / (raw_img.width * raw_img.height)
 
-            if aoi_area > 0.60:
-                snippet = ImageOps.pad(raw_img.crop(aoi_box), target_size, color=(0,0,0,0))
+            if aoi_area_ratio > 0.60:
+                # >60% Fallback: Pad (Contain) the large AOI so it isn't cropped out
+                cropped_aoi = raw_img.crop(global_aoi)
+                snippet = ImageOps.pad(cropped_aoi, target_size, color=(0,0,0,0))
             else:
-                center_x = (aoi_box[0] + aoi_box[2]) / (2 * raw_img.width)
-                center_y = (aoi_box[1] + aoi_box[3]) / (2 * raw_img.height)
-                snippet = ImageOps.fit(raw_img, target_size, centering=(center_x, center_y))
+                # <60% Custom Focal Panning Logic (Cover Mode)
+                scale = max(target_w / raw_img.width, target_h / raw_img.height)
+                new_w = int(raw_img.width * scale)
+                new_h = int(raw_img.height * scale)
+
+                # Resize the full image proportionally to cover the target box
+                resized_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+                # Find the center of your AOI in the newly scaled image
+                aoi_center_x = ((global_aoi[0] + global_aoi[2]) / 2) * scale
+                aoi_center_y = ((global_aoi[1] + global_aoi[3]) / 2) * scale
+
+                # Calculate the ideal crop window to keep the AOI visible
+                ideal_x = aoi_center_x - (target_w / 2)
+                ideal_y = aoi_center_y - (target_h / 2)
+
+                # Clamp the crop window so it doesn't slide off the image bounds
+                crop_x = max(0, min(ideal_x, new_w - target_w))
+                crop_y = max(0, min(ideal_y, new_h - target_h))
+
+                snippet = resized_img.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
         else:
             snippet = ImageOps.fit(raw_img, target_size, centering=(0.5, 0.5))
 
@@ -153,16 +183,15 @@ def render_channel_assets(session_dir=None):
                 except IOError:
                     print(f"  [FATAL] Could not load font at: {font_path}")
                     font = ImageFont.load_default()
-                    lines = wrap_text(headline, font, max_w, draw)
+                    lines = wrap_text(headline, font, max_w, draw, is_rtl)
                     total_height = 0
+                    line_height = 0
                     break
 
-                lines = wrap_text(headline, font, max_w, draw)
+                lines = wrap_text(headline, font, max_w, draw, is_rtl)
 
-                # Dynamic height boundaries using true font typography metrics
-                ascent, descent = font.getmetrics()
-                true_font_height = ascent + descent
-                line_height = true_font_height * line_spacing
+                # Use standard UI typography math
+                line_height = font_size * line_spacing
                 total_height = len(lines) * line_height
 
                 if total_height <= max_h and len(lines) <= max_lines:
@@ -177,11 +206,10 @@ def render_channel_assets(session_dir=None):
                     headline = short_headline
                     font_size = safe_area.get("font_size", 48)
                     font = ImageFont.truetype(font_path, font_size)
-                    lines = wrap_text(headline, font, max_w, draw)
+                    lines = wrap_text(headline, font, max_w, draw, is_rtl)
 
-                    ascent, descent = font.getmetrics()
-                    true_font_height = ascent + descent
-                    line_height = true_font_height * line_spacing
+                    # Use standard UI typography math
+                    line_height = font_size * line_spacing
                     total_height = len(lines) * line_height
 
             # --- CALCULATE VERTICAL CENTERING ---

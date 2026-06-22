@@ -17,6 +17,62 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
 WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "_workspace")
+CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
+GEMINI_KEYS_FILE = os.path.join(CREDENTIALS_DIR, "gemini_keys.json")
+
+def load_gemini_credentials():
+    if os.path.exists(GEMINI_KEYS_FILE):
+        try:
+            with open(GEMINI_KEYS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {"gemini_api_key": None, "last_used_model": "gemini-1.5-flash"}
+
+def save_gemini_credentials(api_key, model_name):
+    if not os.path.exists(CREDENTIALS_DIR):
+        os.makedirs(CREDENTIALS_DIR)
+    payload = {"gemini_api_key": api_key, "last_used_model": model_name}
+    with open(GEMINI_KEYS_FILE, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+def select_operational_model(cached_profile):
+    last_model = cached_profile.get("last_used_model", "gemini-1.5-flash")
+    api_token = cached_profile.get("gemini_api_key")
+
+    if not api_token: return last_model
+
+    print("\n[~] Querying Google API Gateway for live intelligence clusters...")
+    try:
+        client = genai.Client(api_key=api_token)
+        live_models = []
+        for model_meta in client.models.list():
+            if "gemini" in model_meta.name.lower():
+                if any(bad_tag in model_meta.name.lower() for bad_tag in ["embedding", "vision", "live", "audio", "search"]):
+                    continue
+                if "generateContent" in model_meta.supported_actions:
+                    clean_name = model_meta.name.split("/")[-1]
+                    if clean_name not in live_models:
+                        live_models.append(clean_name)
+        live_models.sort()
+    except Exception as e:
+        print(f"[!] Warning: Unable to poll live registry ({e}). Defaulting to offline profile.")
+        return last_model
+
+    model_matrix = {str(i + 1): name for i, name in enumerate(live_models)}
+
+    print("\n========================================================")
+    print("  DYNAMIC GEMINI INTELLIGENCE REPOSITORY")
+    print("========================================================")
+    for index, name in model_matrix.items():
+        print(f"  [{index}] {name.replace('-', ' ').title()} ({name})")
+    print(f"  [Enter] Reuse Last Verified Default ({last_model})")
+    print("========================================================")
+
+    choice = input("[?] Select engine target lane: ").strip()
+    selected_model = model_matrix.get(choice, last_model)
+    save_gemini_credentials(api_token, selected_model)
+    return selected_model
 
 def get_latest_session_directory():
     sessions = glob.glob(os.path.join(WORKSPACE_DIR, "session_*"))
@@ -34,8 +90,6 @@ def wrap_text(text, font, max_width, draw, is_rtl=False):
     lines, current_line = [], []
     for word in words:
         test_line = ' '.join(current_line + [word])
-
-        # Apply reshaping for accurate width calculation if RTL
         text_to_measure = test_line
         if is_rtl:
             reshaped = arabic_reshaper.reshape(test_line)
@@ -73,11 +127,10 @@ def select_aoi_on_image(image_path):
         return (min(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[0], p2[0]), max(p1[1], p2[1]))
     return None
 
-def shorten_headline_with_gemini(headline, lang_code):
-    if not genai or not os.environ.get("GEMINI_API_KEY"): return None
-    client = genai.Client()
-    prompt = f"Shorten this headline for a broadcast graphic, keep language {lang_code}: {headline}"
-    response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
+def shorten_headline_with_gemini(headline, lang_code, api_token, active_model):
+    client = genai.Client(api_key=api_token)
+    prompt = f"Shorten this headline for a broadcast graphic so it fits perfectly on a screen. Keep the original language ({lang_code}). Output ONLY the shortened headline without quotes: {headline}"
+    response = client.models.generate_content(model=active_model, contents=prompt)
     return response.text.strip().strip('"\'')
 
 def render_channel_assets(session_dir=None):
@@ -93,7 +146,6 @@ def render_channel_assets(session_dir=None):
         return
     raw_path = raw_images[0]
 
-    # 1. Global AOI selection
     global_aoi = None
     if input("[?] Define manual AOI? (y/n): ").lower() in ['y', 'yes']:
         global_aoi = select_aoi_on_image(raw_path)
@@ -104,39 +156,27 @@ def render_channel_assets(session_dir=None):
         layout = profile["image_layout"]
         placement = layout["raw_image_placement"]
 
-        # 2. Adaptive Viewport Logic (Camera Panning & Contain Mode)
         raw_img = Image.open(raw_path).convert("RGBA")
         target_size = (placement["width"], placement["height"])
         target_w, target_h = target_size
 
         if global_aoi:
-            # Calculate what percentage of the image the AOI takes up
             aoi_w = global_aoi[2] - global_aoi[0]
             aoi_h = global_aoi[3] - global_aoi[1]
             aoi_area_ratio = (aoi_w * aoi_h) / (raw_img.width * raw_img.height)
 
             if aoi_area_ratio > 0.60:
-                # >60% Fallback: Pad (Contain) the large AOI so it isn't cropped out
                 cropped_aoi = raw_img.crop(global_aoi)
                 snippet = ImageOps.pad(cropped_aoi, target_size, color=(0,0,0,0))
             else:
-                # <60% Custom Focal Panning Logic (Cover Mode)
                 scale = max(target_w / raw_img.width, target_h / raw_img.height)
-                new_w = int(raw_img.width * scale)
-                new_h = int(raw_img.height * scale)
-
-                # Resize the full image proportionally to cover the target box
+                new_w, new_h = int(raw_img.width * scale), int(raw_img.height * scale)
                 resized_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-                # Find the center of your AOI in the newly scaled image
                 aoi_center_x = ((global_aoi[0] + global_aoi[2]) / 2) * scale
                 aoi_center_y = ((global_aoi[1] + global_aoi[3]) / 2) * scale
 
-                # Calculate the ideal crop window to keep the AOI visible
-                ideal_x = aoi_center_x - (target_w / 2)
-                ideal_y = aoi_center_y - (target_h / 2)
-
-                # Clamp the crop window so it doesn't slide off the image bounds
+                ideal_x, ideal_y = aoi_center_x - (target_w / 2), aoi_center_y - (target_h / 2)
                 crop_x = max(0, min(ideal_x, new_w - target_w))
                 crop_y = max(0, min(ideal_y, new_h - target_h))
 
@@ -144,7 +184,6 @@ def render_channel_assets(session_dir=None):
         else:
             snippet = ImageOps.fit(raw_img, target_size, centering=(0.5, 0.5))
 
-        # 3. Canvas Composition
         canvas = Image.new("RGBA", (1000, 1000), (0,0,0,0))
         canvas.paste(snippet, (placement["x"], placement["y"]))
 
@@ -152,91 +191,106 @@ def render_channel_assets(session_dir=None):
         overlay = Image.open(os.path.join(PROJECT_ROOT, template_relative_path)).convert("RGBA")
         canvas = Image.alpha_composite(canvas, overlay)
 
-        # 4. Headline Processing with Execution Loop
         if headline:
             safe_area = layout.get("headline_safe_area", {})
-
-            # Map the exact keys from the JSON configuration
-            font_path_relative = safe_area.get("font_path", "_config/fonts/Dana-Medium.ttf")
-            font_path = os.path.join(PROJECT_ROOT, font_path_relative)
-
-            font_size = safe_area.get("font_size", 48)
+            font_path = os.path.join(PROJECT_ROOT, safe_area.get("font_path", "_config/fonts/Dana-Medium.ttf"))
+            base_font_size = safe_area.get("font_size", 48)
             color = safe_area.get("font_color", "#ffffff")
-
             render_x = safe_area.get("x_start", 36)
             render_y = safe_area.get("y_start", 700)
             max_w = safe_area.get("width", 930)
             max_h = safe_area.get("max_height", 195)
             max_lines = safe_area.get("max_lines", 2)
-
             line_spacing = safe_area.get("line_spacing", 1.1)
-
             is_rtl = profile.get("is_rtl", False)
             alignment = safe_area.get("alignment", "right" if is_rtl else "left").lower()
 
             draw = ImageDraw.Draw(canvas)
+            font_size = base_font_size
 
-            # Auto-shrink font sizing block if text boundaries overflow
-            while font_size > 18:
+            # Infinite validation loop
+            while True:
                 try:
                     font = ImageFont.truetype(font_path, font_size)
                 except IOError:
                     print(f"  [FATAL] Could not load font at: {font_path}")
                     font = ImageFont.load_default()
-                    lines = wrap_text(headline, font, max_w, draw, is_rtl)
-                    total_height = 0
-                    line_height = 0
-                    break
 
                 lines = wrap_text(headline, font, max_w, draw, is_rtl)
-
-                # Use standard UI typography math
                 line_height = font_size * line_spacing
                 total_height = len(lines) * line_height
 
+                # Success Breakout
                 if total_height <= max_h and len(lines) <= max_lines:
                     break
-                font_size -= 2
 
-            # Choice 2/3 Fallback: Try Gemini if font shrinking fails
-            if (len(lines) > max_lines or total_height > max_h) and genai and os.environ.get("GEMINI_API_KEY"):
-                print(f"  [~] Text overflow for {channel_name}. Shortening via Gemini AI...")
-                short_headline = shorten_headline_with_gemini(headline, profile["language"])
-                if short_headline:
-                    headline = short_headline
-                    font_size = safe_area.get("font_size", 48)
-                    font = ImageFont.truetype(font_path, font_size)
-                    lines = wrap_text(headline, font, max_w, draw, is_rtl)
+                # Overflow Logic
+                print(f"\n[!] OVERFLOW ALERT for {channel_name} ({profile['language']})")
+                print(f"    Current headline text breaches the defined safe area boundaries.")
+                print(f"    Text: {headline}")
+                print("    1. Auto-shrink font size to fit")
+                print("    2. Ask Gemini to rewrite/shorten the headline")
+                print("    3. Type a manual override")
 
-                    # Use standard UI typography math
-                    line_height = font_size * line_spacing
-                    total_height = len(lines) * line_height
+                choice = input("Select an option (1/2/3): ").strip()
 
-            # --- CALCULATE VERTICAL CENTERING ---
+                if choice == "1":
+                    while font_size > 18:
+                        font_size -= 2
+                        font = ImageFont.truetype(font_path, font_size)
+                        lines = wrap_text(headline, font, max_w, draw, is_rtl)
+                        line_height = font_size * line_spacing
+                        total_height = len(lines) * line_height
+                        if total_height <= max_h and len(lines) <= max_lines:
+                            break
+                    break # Break the master loop after shrinking
+
+                elif choice == "2":
+                    if not genai:
+                        print("    [X] Gemini SDK missing. Choose another option.")
+                        continue
+                    cached_profile = load_gemini_credentials()
+                    if not cached_profile.get("gemini_api_key"):
+                        print("    [X] Gemini API key missing. Choose another option.")
+                        continue
+
+                    active_model = select_operational_model(cached_profile)
+                    print(f"    [~] Asking Gemini to shorten...")
+
+                    try:
+                        # Attempt the API call
+                        headline = shorten_headline_with_gemini(headline, profile["language"], cached_profile.get("gemini_api_key"), active_model)
+                        print(f"    [+] Gemini proposed: {headline}")
+                    except Exception as e:
+                        # Shock Absorber: Catch 503s or network drops gracefully
+                        print(f"\n    [X] SERVER ERROR: Google's API rejected the request.")
+                        print(f"        {str(e).split('.')[0]}.")
+                        print("    [!] The selected model is likely overloaded. Please try again or select a different model.")
+
+                    font_size = base_font_size # Reset font to test new headline
+
+                elif choice == "3":
+                    headline = input("    [?] Enter shorter headline: ").strip()
+                    font_size = base_font_size # Reset font to test new headline
+
+            # Centering & Drawing
             y_offset = max(0, (max_h - total_height) / 2)
             current_y = render_y + y_offset
 
-            # Draw rendering loops
             for line in lines:
                 text_to_draw = line
-
-                # Apply script reshaping if RTL
                 if is_rtl:
                     reshaped = arabic_reshaper.reshape(line)
                     text_to_draw = get_display(reshaped)
 
-                # Calculate the exact pixel width of the current line
                 line_w = draw.textlength(text_to_draw, font=font)
-
-                # --- APPLY HORIZONTAL ALIGNMENT ---
                 if alignment == "center":
                     line_start_x = render_x + ((max_w - line_w) / 2)
                 elif alignment == "right":
                     line_start_x = render_x + max_w - line_w
-                else:  # left alignment
+                else:
                     line_start_x = render_x
 
-                # Draw the line and advance the Y coordinate
                 draw.text((line_start_x, current_y), text_to_draw, font=font, fill=color)
                 current_y += line_height
 

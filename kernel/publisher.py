@@ -5,6 +5,9 @@ import random
 import asyncio
 import re
 
+# Tell Python NOT to write .pyc files or __pycache__ folders
+sys.dont_write_bytecode = True
+
 # Import existing auth manager (assumed to be in the same directory)
 import auth_manager
 

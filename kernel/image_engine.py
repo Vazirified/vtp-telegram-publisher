@@ -105,25 +105,47 @@ def wrap_text(text, font, max_width, draw, is_rtl=False):
 
 def select_aoi_on_image(image_path):
     root = tk.Tk()
-    root.title("Define Area of Interest (2 clicks: Top-Left, Bottom-Right)")
-    img = Image.open(image_path)
-    preview = img.copy()
-    preview.thumbnail((800, 600))
+    root.title("Define AOI (Dark grey is extendable margin for padding)")
+    img = Image.open(image_path).convert("RGBA")
+    w, h = img.size
+
+    # 1. Calculate a 50% margin on all 4 sides (makes workspace 2x original size)
+    pad_w, pad_h = int(w * 2), int(h * 2)
+    offset_x, offset_y = int(w * 0.5), int(h * 0.5)
+
+    # 2. Paint margin dark grey so the user can see boundaries
+    padded_img = Image.new("RGBA", (pad_w, pad_h), (40, 40, 40, 255))
+    padded_img.paste(img, (offset_x, offset_y))
+
+    preview = padded_img.copy()
+    preview.thumbnail((1000, 800)) # Larger UI to accommodate the margins
     photo = ImageTk.PhotoImage(preview)
+
     label = tk.Label(root, image=photo)
     label.pack()
+
     points = []
     def on_click(event):
         points.append((event.x, event.y))
         if len(points) == 2:
             root.quit(); root.destroy()
+
     label.bind("<Button-1>", on_click)
     root.mainloop()
+
     if len(points) == 2:
-        scale_x = img.width / preview.width
-        scale_y = img.height / preview.height
-        p1 = (int(points[0][0] * scale_x), int(points[0][1] * scale_y))
-        p2 = (int(points[1][0] * scale_x), int(points[1][1] * scale_y))
+        scale_x = pad_w / preview.width
+        scale_y = pad_h / preview.height
+
+        # 3. Map GUI clicks back to the full 2x padded resolution
+        p1_pad = (points[0][0] * scale_x, points[0][1] * scale_y)
+        p2_pad = (points[1][0] * scale_x, points[1][1] * scale_y)
+
+        # 4. Subtract the offset to get coordinates relative to the original image bounds
+        # (This correctly yields negative numbers if they clicked outside!)
+        p1 = (int(p1_pad[0] - offset_x), int(p1_pad[1] - offset_y))
+        p2 = (int(p2_pad[0] - offset_x), int(p2_pad[1] - offset_y))
+
         return (min(p1[0], p2[0]), min(p1[1], p2[1]), max(p1[0], p2[0]), max(p1[1], p2[1]))
     return None
 
@@ -161,20 +183,38 @@ def render_channel_assets(session_dir=None):
         target_w, target_h = target_size
 
         if global_aoi:
-            aoi_w = global_aoi[2] - global_aoi[0]
-            aoi_h = global_aoi[3] - global_aoi[1]
+            # 1. Expand raw_img natively if the user selected an AOI outside its bounds
+            min_x = min(0, global_aoi[0])
+            min_y = min(0, global_aoi[1])
+            max_x = max(raw_img.width, global_aoi[2])
+            max_y = max(raw_img.height, global_aoi[3])
+
+            if min_x < 0 or min_y < 0 or max_x > raw_img.width or max_y > raw_img.height:
+                # Pillow's crop() automatically adds transparent padding for out-of-bounds coords
+                raw_img = raw_img.crop((min_x, min_y, max_x, max_y))
+                # Shift the AOI coordinates so they remain accurate on the newly padded image
+                adjusted_aoi = (
+                    global_aoi[0] - min_x, global_aoi[1] - min_y,
+                    global_aoi[2] - min_x, global_aoi[3] - min_y
+                )
+            else:
+                adjusted_aoi = global_aoi
+
+            # Continue standard math on the (potentially expanded) image
+            aoi_w = adjusted_aoi[2] - adjusted_aoi[0]
+            aoi_h = adjusted_aoi[3] - adjusted_aoi[1]
             aoi_area_ratio = (aoi_w * aoi_h) / (raw_img.width * raw_img.height)
 
             if aoi_area_ratio > 0.60:
-                cropped_aoi = raw_img.crop(global_aoi)
+                cropped_aoi = raw_img.crop(adjusted_aoi)
                 snippet = ImageOps.pad(cropped_aoi, target_size, color=(0,0,0,0))
             else:
                 scale = max(target_w / raw_img.width, target_h / raw_img.height)
                 new_w, new_h = int(raw_img.width * scale), int(raw_img.height * scale)
                 resized_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-                aoi_center_x = ((global_aoi[0] + global_aoi[2]) / 2) * scale
-                aoi_center_y = ((global_aoi[1] + global_aoi[3]) / 2) * scale
+                aoi_center_x = ((adjusted_aoi[0] + adjusted_aoi[2]) / 2) * scale
+                aoi_center_y = ((adjusted_aoi[1] + adjusted_aoi[3]) / 2) * scale
 
                 ideal_x, ideal_y = aoi_center_x - (target_w / 2), aoi_center_y - (target_h / 2)
                 crop_x = max(0, min(ideal_x, new_w - target_w))
@@ -184,8 +224,12 @@ def render_channel_assets(session_dir=None):
         else:
             snippet = ImageOps.fit(raw_img, target_size, centering=(0.5, 0.5))
 
-        canvas = Image.new("RGBA", (1000, 1000), (0,0,0,0))
-        canvas.paste(snippet, (placement["x"], placement["y"]))
+        # 2. Generate a solid white background layer based on JSON canvas size
+        canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
+        canvas = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 255))
+
+        # Paste the raw image using ITSELF as a mask to preserve the white background underneath transparent padding
+        canvas.paste(snippet, (placement["x"], placement["y"]), snippet)
 
         template_relative_path = layout.get("template_overlay_path")
         overlay = Image.open(os.path.join(PROJECT_ROOT, template_relative_path)).convert("RGBA")

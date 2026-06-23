@@ -20,19 +20,19 @@ echo   ePLANET PUBLISHER - SERVICE LAUNCHER
 echo ========================================================
 echo.
 
-:: Step 1: Check if the virtual environment exists [cite: 2]
+:: Step 1: Check if the virtual environment exists
 if not exist .venv\Scripts\activate.bat goto MISSING_VENV
 goto ACTIVATE_VENV
 
 :MISSING_VENV
 echo [!] System environment is not initialized.
 echo.
-set /p setup_choice=[?] Virtual environment not found. Run setup.bat now? [y/n]: [cite: 3]
+set /p setup_choice=[?] Virtual environment not found. Run setup.bat now? [y/n]: 
 
 if /i "%setup_choice%"=="y" goto LAUNCH_SETUP
 echo --------------------------------------------------------
 echo [i] Exiting launcher.
-echo     Please run setup.bat manually. [cite: 4]
+echo     Please run setup.bat manually.
 echo --------------------------------------------------------
 pause
 exit /b
@@ -48,9 +48,9 @@ echo ========================================================
 echo   ePLANET PUBLISHER - ENVIRONMENT READY
 echo ========================================================
 echo.
-echo   [OK] Setup process has completed successfully. [cite: 5]
+echo   [OK] Setup process has completed successfully.
 echo.
-echo   [--^>] Please launch run.bat AGAIN to open the application. [cite: 6]
+echo   [--^>] Please launch run.bat AGAIN to open the application.
 echo.
 echo ========================================================
 pause
@@ -63,13 +63,17 @@ call .venv\Scripts\activate
 echo [OK] Environment sandbox is live.
 echo.
 
-:: Step 3: Interactive Prompt Routing (Updated to target main.py)
-set /p choice=[?] Launch master orchestrator (main.py)? [y/n]: 
+:: Step 3: Interactive Prompt Routing with 5-Second Auto-Timeout
+echo [?] Launch master orchestrator (main.py)?
+choice /C YN /T 5 /D Y /M "Auto-launching in 5 seconds. Press Y to start now, N to cancel"
 
-if /i "%choice%"=="y" goto LAUNCH_SCRIPT
-goto MANUAL_MODE
+:: Check the exit code of the choice command
+:: ERRORLEVEL 2 means 'N' was pressed. ERRORLEVEL 1 means 'Y' was pressed or it timed out.
+if errorlevel 2 goto MANUAL_MODE
+goto LAUNCH_SCRIPT
 
 :LAUNCH_SCRIPT
+echo.
 echo --------------------------------------------------------
 echo [--^>] Launching master pipeline...
 echo --------------------------------------------------------
@@ -81,10 +85,11 @@ pause
 exit /b
 
 :MANUAL_MODE
+echo.
 echo --------------------------------------------------------
 echo [i] Bypassing script execution.
 echo     Entering manual command line override mode.
-echo     Type "deactivate" and close window to exit. [cite: 11]
+echo     Type "deactivate" and close window to exit.
 echo --------------------------------------------------------
 echo.
 cmd /k

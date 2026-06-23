@@ -22,6 +22,20 @@ def get_latest_session_directory():
     sessions = glob.glob(os.path.join(WORKSPACE_DIR, "session_*"))
     return sorted(sessions)[-1] if sessions else None
 
+def parse_target(target):
+    """
+    Smart Parser: Safely converts string-based numerical IDs into true Integers for Telethon,
+    while leaving standard @usernames and 'me' untouched.
+    """
+    if not target:
+        return None
+    if isinstance(target, str):
+        target = target.strip()
+        # If it's all digits (or a negative sign followed by digits), cast to int
+        if target.lstrip('-').isdigit():
+            return int(target)
+    return target
+
 def generate_all_caption_files(session_dir, config):
     """
     Stitches header, headline, body, and footer for EVERY channel defined in config.
@@ -74,8 +88,6 @@ def generate_all_caption_files(session_dir, config):
         compiled_caption = "\n\n".join(final_text)
 
         # --- BUG FIX 2: Telethon Entity Offset Stripper ---
-        # Automatically removes spaces inside tg-emoji tags to prevent Telegram from
-        # stripping leading text spaces and destroying the entity offsets.
         compiled_caption = re.sub(r'(<tg-emoji[^>]*>)\s+', r'\1', compiled_caption)
         compiled_caption = re.sub(r'\s+(</tg-emoji>)', r'\1', compiled_caption)
 
@@ -166,10 +178,20 @@ async def main():
         print("[ERROR] Could not initialize client via auth_manager.")
         return
 
-    catch_all_gate = config.get("catch_all_channel")
+    # Safely parse the Catch-All Gate ID
+    catch_all_gate = parse_target(config.get("catch_all_channel"))
     final_approval_granted = False
 
     async with client:
+        # --- CACHE WARMUP ---
+        # Forces Telethon to sync its local DB with Telegram so it recognizes hidden group IDs
+        print("\n[~] Warming up Telethon entity cache (syncing with Telegram)...")
+        try:
+            await client.get_dialogs(limit=50)
+            print("  [+] Cache synced.")
+        except Exception:
+            print("  [!] Cache sync skipped (Non-fatal).")
+
         while True:
             if catch_all_gate:
                 print(f"\n[~] Dispatching previews to Catch-All Gate ({catch_all_gate})...")
@@ -210,7 +232,9 @@ async def main():
             print("========================================================")
 
             for ch_name in selected_ch_names:
-                live_chat_id = channels_dict[ch_name].get("chat_id")
+                # Safely parse the Live Chat ID
+                raw_chat_id = channels_dict[ch_name].get("chat_id")
+                live_chat_id = parse_target(raw_chat_id)
 
                 if not live_chat_id:
                     print(f"  [X] Skipping {ch_name}: No chat_id defined in config.")

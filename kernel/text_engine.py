@@ -132,17 +132,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
     api_token = get_gemini_api_token(cached_profile)
 
     cached_profile["gemini_api_key"] = api_token
-    active_model = select_operational_model(cached_profile)
-
-    save_gemini_credentials(api_token, active_model)
     target_languages = extract_target_languages()
-
-    # Initialize the GenAI Client with a strict 30-second network timeout guard
-    # (prevents infinite terminal hangs if a low-tier model cluster stalls)
-    client = genai.Client(
-        api_key=api_token,
-        http_options=types.HttpOptions(timeout=30 * 1000) # Value in milliseconds
-    )
 
     system_instruction = (
         f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations matching this target language array: {target_languages}.\n\n"
@@ -165,36 +155,53 @@ def execute_text_pipeline(raw_payload: str) -> str:
     )
 
     prompt = f"Process the following source content text:\n\n{clean_text}"
+    parsed_payload = None
 
-    print(f"[~] Connecting to Unified Gateway via cluster route '{active_model}'...")
-    try:
-        response = client.models.generate_content(
-            model=active_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                response_mime_type="application/json"
-            )
+    # --- RETRY LOOP INJECTED HERE ---
+    while True:
+        active_model = select_operational_model(cached_profile)
+        save_gemini_credentials(api_token, active_model)
+
+        # Initialize the GenAI Client with a strict 30-second network timeout guard
+        client = genai.Client(
+            api_key=api_token,
+            http_options=types.HttpOptions(timeout=30 * 1000) # Value in milliseconds
         )
-        parsed_payload = json.loads(response.text)
 
-        # Structural defensive layout safety handler
-        if isinstance(parsed_payload, list):
-            normalized_dict = {}
-            for block in parsed_payload:
-                if isinstance(block, dict):
-                    if "language" in block:
-                        lang_key = str(block["language"]).lower()
-                        normalized_dict[lang_key] = {"headline": block.get("headline", ""), "body": block.get("body", "")}
-                    else:
-                        for k, v in block.items():
-                            if isinstance(v, dict) and ("headline" in v or "body" in v):
-                                normalized_dict[k.lower()] = v
-            parsed_payload = normalized_dict
+        print(f"[~] Connecting to Unified Gateway via cluster route '{active_model}'...")
+        try:
+            response = client.models.generate_content(
+                model=active_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json"
+                )
+            )
+            parsed_payload = json.loads(response.text)
 
-    except Exception as e:
-        print(f"[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
-        return None
+            # Structural defensive layout safety handler
+            if isinstance(parsed_payload, list):
+                normalized_dict = {}
+                for block in parsed_payload:
+                    if isinstance(block, dict):
+                        if "language" in block:
+                            lang_key = str(block["language"]).lower()
+                            normalized_dict[lang_key] = {"headline": block.get("headline", ""), "body": block.get("body", "")}
+                        else:
+                            for k, v in block.items():
+                                if isinstance(v, dict) and ("headline" in v or "body" in v):
+                                    normalized_dict[k.lower()] = v
+                parsed_payload = normalized_dict
+
+            # If everything succeeded without throwing an Exception, break the loop and continue
+            break
+
+        except Exception as e:
+            print(f"\n[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
+            print("[!] The selected model is likely overloaded, unavailable, or returned bad data.")
+            print("[i] Do not worry—your input text is safe. Returning to the model selection menu.")
+            print("    (Press Ctrl+C to abort entirely if you wish to exit)\n")
 
     # Step 5: Format the English headline into a human-readable folder slug string
     en_node = parsed_payload.get("en", {})

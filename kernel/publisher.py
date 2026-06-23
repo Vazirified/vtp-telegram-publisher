@@ -4,6 +4,7 @@ import json
 import random
 import asyncio
 import re
+import sys
 
 # Tell Python NOT to write .pyc files or __pycache__ folders
 sys.dont_write_bytecode = True

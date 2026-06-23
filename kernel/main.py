@@ -105,7 +105,6 @@ def fetch_telegram_media_context_async(target_entity_id, callback, error_callbac
                 async for msg in client.iter_messages(entity, **kwargs):
                     has_media = bool(msg.photo or msg.document)
 
-                    # We want to display it if it has text OR if it has a file/photo
                     if msg.text or has_media:
                         date_str = msg.date.strftime("%m-%d %H:%M")
                         text_snippet = (msg.text or "").replace('\n', ' ')
@@ -148,7 +147,6 @@ def download_telegram_media_async(target_entity_id, message_id, callback, error_
 
                 if msg and (msg.photo or msg.document):
                     os.makedirs(WORKSPACE_DIR, exist_ok=True)
-                    # By passing the DIRECTORY, Telethon will save it with its original filename/extension
                     downloaded_file = await client.download_media(msg, file=WORKSPACE_DIR)
                     if downloaded_file:
                         return downloaded_file
@@ -165,7 +163,6 @@ def download_telegram_media_async(target_entity_id, message_id, callback, error_
         result = loop.run_until_complete(download())
         loop.close()
 
-        # If it returns a valid file path that exists on disk, it succeeded
         if isinstance(result, str) and os.path.exists(result):
             callback(result)
         else:
@@ -255,7 +252,7 @@ def run_ingestion_gui():
     text_header_frame.pack(fill="x", pady=(0, 5))
     tk.Label(text_header_frame, text="1. Source Text (Paste manually or Fetch):", font=("Arial", 11, "bold")).pack(side="left")
 
-    fetch_txt_btn = tk.Button(text_header_frame, text="Fetch Text from Telegram", bg="#e0e0e0")
+    fetch_txt_btn = tk.Button(text_header_frame, text="Fetch Text from Telegram", bg="#e0e0e0", width=22)
     fetch_txt_btn._original_text = "Fetch Text from Telegram"
     fetch_txt_btn.pack(side="right")
 
@@ -334,16 +331,21 @@ def run_ingestion_gui():
     img_frame.pack(fill="x", pady=5)
 
     img_path_var = tk.StringVar()
-    img_label = tk.Label(img_frame, textvariable=img_path_var, fg="blue", bg="#f0f0f0", width=55, anchor="w")
-    img_label.pack(side="left", padx=(0, 10))
+    # Expand out the label to cleanly push the action buttons to the right side
+    img_label = tk.Label(img_frame, textvariable=img_path_var, fg="blue", bg="#f0f0f0", anchor="w")
+    img_label.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+    # A sub-frame anchored right keeps the buttons cleanly grouped
+    action_btn_frame = tk.Frame(img_frame)
+    action_btn_frame.pack(side="right")
 
     def browse_image():
         filepath = filedialog.askopenfilename(title="Select Raw Image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
         if filepath: img_path_var.set(filepath)
 
-    tk.Button(img_frame, text="Browse Local...", command=browse_image, width=15).pack(side="left", padx=(0, 5))
+    tk.Button(action_btn_frame, text="Browse Local...", command=browse_image, width=15).pack(side="left", padx=(0, 10))
 
-    fetch_img_btn = tk.Button(img_frame, text="Fetch from Telegram", bg="#e0e0e0", width=20)
+    fetch_img_btn = tk.Button(action_btn_frame, text="Fetch from Telegram", bg="#e0e0e0", width=22)
     fetch_img_btn._original_text = "Fetch from Telegram"
     fetch_img_btn.pack(side="left")
 
@@ -371,7 +373,6 @@ def run_ingestion_gui():
                 list_frame.pack(fill="both", expand=True, padx=10, pady=5)
                 scrollbar = tk.Scrollbar(list_frame)
                 scrollbar.pack(side="right", fill="y")
-                # SINGLE select for downloading files
                 state['listbox'] = tk.Listbox(list_frame, selectmode=tk.SINGLE, font=("Arial", 10), yscrollcommand=scrollbar.set)
                 state['listbox'].pack(side="left", fill="both", expand=True)
                 scrollbar.config(command=state['listbox'].yview)
@@ -432,6 +433,11 @@ def run_ingestion_gui():
     # ==========================================
     # 3. SUBMISSION HANDLER
     # ==========================================
+
+    # Sub-frame explicitly used to anchor the Start button to the right
+    submit_frame = tk.Frame(root)
+    submit_frame.pack(fill="x", pady=(20, 0))
+
     def on_submit():
         raw_text = text_input.get("1.0", tk.END).strip()
         img_path = img_path_var.get().strip()
@@ -448,7 +454,8 @@ def run_ingestion_gui():
         root.quit()
         root.destroy()
 
-    tk.Button(root, text="Start Processing Pipeline", command=on_submit, bg="#4CAF50", fg="white", font=("Arial", 12, "bold"), pady=10).pack(fill="x", pady=20)
+    # The button is now appropriately sized and pushed to the right side
+    tk.Button(submit_frame, text="Start Processing Pipeline", command=on_submit, bg="#4CAF50", fg="white", font=("Arial", 12, "bold"), width=30, pady=8).pack(side="right")
 
     def on_close():
         root.quit()

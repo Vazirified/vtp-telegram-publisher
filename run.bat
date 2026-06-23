@@ -20,25 +20,26 @@ echo   ePLANET PUBLISHER - SERVICE LAUNCHER
 echo ========================================================
 echo.
 
-:: Step 1: Check if the virtual environment exists
+:: Step 1: Check if the virtual environment exists [cite: 2]
 if not exist .venv\Scripts\activate.bat goto MISSING_VENV
 goto ACTIVATE_VENV
 
 :MISSING_VENV
 echo [!] System environment is not initialized.
 echo.
-set /p setup_choice=[?] Virtual environment not found. Run setup.bat now? [y/n]:
+set /p setup_choice=[?] Virtual environment not found. Run setup.bat now? [y/n]: [cite: 3]
 
 if /i "%setup_choice%"=="y" goto LAUNCH_SETUP
 echo --------------------------------------------------------
-echo [i] Exiting launcher. Please run setup.bat manually.
+echo [i] Exiting launcher.
+echo     Please run setup.bat manually. [cite: 4]
 echo --------------------------------------------------------
 pause
 exit /b
 
 :LAUNCH_SETUP
 echo --------------------------------------------------------
-echo [--^>^] Handing over execution control to setup.bat...
+echo [--^>] Handing over execution control to setup.bat...
 echo --------------------------------------------------------
 call setup.bat
 
@@ -47,9 +48,9 @@ echo ========================================================
 echo   ePLANET PUBLISHER - ENVIRONMENT READY
 echo ========================================================
 echo.
-echo   [OK] Setup process has completed successfully.
+echo   [OK] Setup process has completed successfully. [cite: 5]
 echo.
-echo   [--^>^] Please launch run.bat AGAIN to open the application.
+echo   [--^>] Please launch run.bat AGAIN to open the application. [cite: 6]
 echo.
 echo ========================================================
 pause
@@ -57,22 +58,23 @@ exit /b
 
 :ACTIVATE_VENV
 :: Step 2: Safe activation of the virtual environment container
-echo [--^>^] Initializing isolated environment runtime...
+echo [--^>] Initializing isolated environment runtime...
 call .venv\Scripts\activate
 echo [OK] Environment sandbox is live.
 echo.
 
-:: Step 3: Interactive Prompt Routing (Updated to unified lowercase kernel layout)
-set /p choice=[?] Launch orchestrator interface script? [y/n]:
+:: Step 3: Interactive Prompt Routing (Updated to target main.py)
+set /p choice=[?] Launch master orchestrator (main.py)? [y/n]: 
 
 if /i "%choice%"=="y" goto LAUNCH_SCRIPT
 goto MANUAL_MODE
 
 :LAUNCH_SCRIPT
 echo --------------------------------------------------------
-echo [--^>^] Launching interface engine...
+echo [--^>] Launching master pipeline...
 echo --------------------------------------------------------
-python kernel\orchestrator.py
+:: Added the -B flag as a secondary safeguard against __pycache__ folders
+python -B kernel\main.py
 echo --------------------------------------------------------
 echo [i] Script execution complete.
 pause
@@ -82,7 +84,7 @@ exit /b
 echo --------------------------------------------------------
 echo [i] Bypassing script execution.
 echo     Entering manual command line override mode.
-echo     Type "deactivate" and close window to exit.
+echo     Type "deactivate" and close window to exit. [cite: 11]
 echo --------------------------------------------------------
 echo.
 cmd /k

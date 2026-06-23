@@ -85,14 +85,18 @@ def extract_markdown_headline(md_file_path):
             if line.strip().startswith("#"): return line.lstrip("#").strip()
     return None
 
-def wrap_text(text, font, max_width, draw, is_rtl=False):
+def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None):
+    """Wraps text intelligently. Uses a custom RTL reshaper if provided."""
     words = text.split()
     lines, current_line = [], []
     for word in words:
         test_line = ' '.join(current_line + [word])
         text_to_measure = test_line
         if is_rtl:
-            reshaped = arabic_reshaper.reshape(test_line)
+            if custom_reshaper:
+                reshaped = custom_reshaper.reshape(test_line)
+            else:
+                reshaped = arabic_reshaper.reshape(test_line)
             text_to_measure = get_display(reshaped)
 
         if draw.textlength(text_to_measure, font=font) <= max_width:
@@ -109,16 +113,14 @@ def select_aoi_on_image(image_path):
     img = Image.open(image_path).convert("RGBA")
     w, h = img.size
 
-    # 1. Calculate a 50% margin on all 4 sides (makes workspace 2x original size)
     pad_w, pad_h = int(w * 2), int(h * 2)
     offset_x, offset_y = int(w * 0.5), int(h * 0.5)
 
-    # 2. Paint margin dark grey so the user can see boundaries
     padded_img = Image.new("RGBA", (pad_w, pad_h), (40, 40, 40, 255))
     padded_img.paste(img, (offset_x, offset_y))
 
     preview = padded_img.copy()
-    preview.thumbnail((1000, 800)) # Larger UI to accommodate the margins
+    preview.thumbnail((1000, 800))
     photo = ImageTk.PhotoImage(preview)
 
     label = tk.Label(root, image=photo)
@@ -137,12 +139,9 @@ def select_aoi_on_image(image_path):
         scale_x = pad_w / preview.width
         scale_y = pad_h / preview.height
 
-        # 3. Map GUI clicks back to the full 2x padded resolution
         p1_pad = (points[0][0] * scale_x, points[0][1] * scale_y)
         p2_pad = (points[1][0] * scale_x, points[1][1] * scale_y)
 
-        # 4. Subtract the offset to get coordinates relative to the original image bounds
-        # (This correctly yields negative numbers if they clicked outside!)
         p1 = (int(p1_pad[0] - offset_x), int(p1_pad[1] - offset_y))
         p2 = (int(p2_pad[0] - offset_x), int(p2_pad[1] - offset_y))
 
@@ -173,26 +172,46 @@ def render_channel_assets(session_dir=None):
         global_aoi = select_aoi_on_image(raw_path)
 
     for channel_name, profile in config["channels"].items():
-        md_path = os.path.join(session_dir, f"{profile['language']}.md")
+        lang_code = profile.get("language", "en").lower()
+        is_rtl = profile.get("is_rtl", False)
+
+        md_path = os.path.join(session_dir, f"{lang_code}.md")
         headline = extract_markdown_headline(md_path)
         layout = profile["image_layout"]
         placement = layout["raw_image_placement"]
+
+        # --- DYNAMIC RTL RESHAPER INSTANTIATION ---
+        # Forces ArabicReshaper to load language-specific ligature rules
+        # so characters like Kurdish ە or Farsi گ connect properly.
+        custom_reshaper = None
+        if is_rtl:
+            reshaper_lang = 'Arabic'
+            if lang_code in ['ckb', 'ku', 'kurdish']:
+                reshaper_lang = 'Kurdish'
+            elif lang_code in ['fa', 'per', 'farsi']:
+                reshaper_lang = 'Farsi'
+            elif lang_code in ['ur', 'urdu']:
+                reshaper_lang = 'Urdu'
+
+            reshaper_config = {
+                'language': reshaper_lang,
+                'delete_harakat': False,
+                'support_ligatures': True
+            }
+            custom_reshaper = arabic_reshaper.ArabicReshaper(configuration=reshaper_config)
 
         raw_img = Image.open(raw_path).convert("RGBA")
         target_size = (placement["width"], placement["height"])
         target_w, target_h = target_size
 
         if global_aoi:
-            # 1. Expand raw_img natively if the user selected an AOI outside its bounds
             min_x = min(0, global_aoi[0])
             min_y = min(0, global_aoi[1])
             max_x = max(raw_img.width, global_aoi[2])
             max_y = max(raw_img.height, global_aoi[3])
 
             if min_x < 0 or min_y < 0 or max_x > raw_img.width or max_y > raw_img.height:
-                # Pillow's crop() automatically adds transparent padding for out-of-bounds coords
                 raw_img = raw_img.crop((min_x, min_y, max_x, max_y))
-                # Shift the AOI coordinates so they remain accurate on the newly padded image
                 adjusted_aoi = (
                     global_aoi[0] - min_x, global_aoi[1] - min_y,
                     global_aoi[2] - min_x, global_aoi[3] - min_y
@@ -200,7 +219,6 @@ def render_channel_assets(session_dir=None):
             else:
                 adjusted_aoi = global_aoi
 
-            # Continue standard math on the (potentially expanded) image
             aoi_w = adjusted_aoi[2] - adjusted_aoi[0]
             aoi_h = adjusted_aoi[3] - adjusted_aoi[1]
             aoi_area_ratio = (aoi_w * aoi_h) / (raw_img.width * raw_img.height)
@@ -224,11 +242,8 @@ def render_channel_assets(session_dir=None):
         else:
             snippet = ImageOps.fit(raw_img, target_size, centering=(0.5, 0.5))
 
-        # 2. Generate a solid white background layer based on JSON canvas size
         canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
         canvas = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 255))
-
-        # Paste the raw image using ITSELF as a mask to preserve the white background underneath transparent padding
         canvas.paste(snippet, (placement["x"], placement["y"]), snippet)
 
         template_relative_path = layout.get("template_overlay_path")
@@ -246,13 +261,11 @@ def render_channel_assets(session_dir=None):
             max_h = safe_area.get("max_height", 195)
             max_lines = safe_area.get("max_lines", 2)
             line_spacing = safe_area.get("line_spacing", 1.1)
-            is_rtl = profile.get("is_rtl", False)
             alignment = safe_area.get("alignment", "right" if is_rtl else "left").lower()
 
             draw = ImageDraw.Draw(canvas)
             font_size = base_font_size
 
-            # Infinite validation loop
             while True:
                 try:
                     font = ImageFont.truetype(font_path, font_size)
@@ -260,16 +273,15 @@ def render_channel_assets(session_dir=None):
                     print(f"  [FATAL] Could not load font at: {font_path}")
                     font = ImageFont.load_default()
 
-                lines = wrap_text(headline, font, max_w, draw, is_rtl)
+                # Pass the custom reshaper to the wrap logic
+                lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper)
                 line_height = font_size * line_spacing
                 total_height = len(lines) * line_height
 
-                # Success Breakout
                 if total_height <= max_h and len(lines) <= max_lines:
                     break
 
-                # Overflow Logic
-                print(f"\n[!] OVERFLOW ALERT for {channel_name} ({profile['language']})")
+                print(f"\n[!] OVERFLOW ALERT for {channel_name} ({lang_code})")
                 print(f"    Current headline text breaches the defined safe area boundaries.")
                 print(f"    Text: {headline}")
                 print("    1. Auto-shrink font size to fit")
@@ -282,12 +294,12 @@ def render_channel_assets(session_dir=None):
                     while font_size > 18:
                         font_size -= 2
                         font = ImageFont.truetype(font_path, font_size)
-                        lines = wrap_text(headline, font, max_w, draw, is_rtl)
+                        lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper)
                         line_height = font_size * line_spacing
                         total_height = len(lines) * line_height
                         if total_height <= max_h and len(lines) <= max_lines:
                             break
-                    break # Break the master loop after shrinking
+                    break
 
                 elif choice == "2":
                     if not genai:
@@ -302,29 +314,30 @@ def render_channel_assets(session_dir=None):
                     print(f"    [~] Asking Gemini to shorten...")
 
                     try:
-                        # Attempt the API call
-                        headline = shorten_headline_with_gemini(headline, profile["language"], cached_profile.get("gemini_api_key"), active_model)
+                        headline = shorten_headline_with_gemini(headline, lang_code, cached_profile.get("gemini_api_key"), active_model)
                         print(f"    [+] Gemini proposed: {headline}")
                     except Exception as e:
-                        # Shock Absorber: Catch 503s or network drops gracefully
                         print(f"\n    [X] SERVER ERROR: Google's API rejected the request.")
                         print(f"        {str(e).split('.')[0]}.")
                         print("    [!] The selected model is likely overloaded. Please try again or select a different model.")
 
-                    font_size = base_font_size # Reset font to test new headline
+                    font_size = base_font_size
 
                 elif choice == "3":
                     headline = input("    [?] Enter shorter headline: ").strip()
-                    font_size = base_font_size # Reset font to test new headline
+                    font_size = base_font_size
 
-            # Centering & Drawing
             y_offset = max(0, (max_h - total_height) / 2)
             current_y = render_y + y_offset
 
             for line in lines:
                 text_to_draw = line
                 if is_rtl:
-                    reshaped = arabic_reshaper.reshape(line)
+                    # Apply the dynamic language-specific reshaper before drawing
+                    if custom_reshaper:
+                        reshaped = custom_reshaper.reshape(line)
+                    else:
+                        reshaped = arabic_reshaper.reshape(line)
                     text_to_draw = get_display(reshaped)
 
                 line_w = draw.textlength(text_to_draw, font=font)

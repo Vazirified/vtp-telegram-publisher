@@ -65,7 +65,7 @@ echo.
 
 :: Step 3: Interactive Prompt Routing with 5-Second Auto-Timeout
 echo [?] Launch master orchestrator (main.py)?
-choice /C YN /T 5 /D Y /M "Auto-launching in 5 seconds. Press Y to start now, N to cancel"
+choice /C YN /T 3 /D Y /M "Auto-launching in 3 seconds. Press Y to start now, N to cancel"
 
 :: Check the exit code of the choice command
 :: ERRORLEVEL 2 means 'N' was pressed. ERRORLEVEL 1 means 'Y' was pressed or it timed out.

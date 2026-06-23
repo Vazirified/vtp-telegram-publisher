@@ -85,7 +85,7 @@ def extract_markdown_headline(md_file_path):
             if line.strip().startswith("#"): return line.lstrip("#").strip()
     return None
 
-def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None):
+def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, lang_code=None):
     """Wraps text intelligently. Uses a custom RTL reshaper if provided."""
     words = text.split()
     lines, current_line = [], []
@@ -97,6 +97,11 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None):
                 reshaped = custom_reshaper.reshape(test_line)
             else:
                 reshaped = arabic_reshaper.reshape(test_line)
+
+            # --- POST-RESHAPE KURDISH INTERCEPTOR ---
+            if lang_code in ['ckb', 'ku', 'kurdish']:
+                reshaped = reshaped.replace('\uFE93', '\uFEE9').replace('\uFE94', '\uFEEA')
+
             text_to_measure = get_display(reshaped)
 
         if draw.textlength(text_to_measure, font=font) <= max_width:
@@ -118,24 +123,17 @@ def select_aoi_on_image(image_path):
 
     padded_img = Image.new("RGBA", (pad_w, pad_h), (40, 40, 40, 255))
 
-    # --- DRAW BACKGROUND GRID ---
     draw_pad = ImageDraw.Draw(padded_img)
-    # Scale grid density dynamically relative to the image size
     grid_spacing = max(50, int(w * 0.1))
     grid_color = (90, 90, 90, 255)
-    # Ensure lines survive Tkinter's thumbnail downscaling
     line_thickness = max(2, int(pad_w / 1000))
 
-    # Draw Vertical Lines
     for x in range(offset_x % grid_spacing, pad_w, grid_spacing):
         draw_pad.line([(x, 0), (x, pad_h)], fill=grid_color, width=line_thickness)
 
-    # Draw Horizontal Lines
     for y in range(offset_y % grid_spacing, pad_h, grid_spacing):
         draw_pad.line([(0, y), (pad_w, y)], fill=grid_color, width=line_thickness)
-    # ----------------------------
 
-    # Paste the original image over the grid so it only shows in the margins
     padded_img.paste(img, (offset_x, offset_y))
 
     preview = padded_img.copy()
@@ -196,12 +194,14 @@ def render_channel_assets(session_dir=None):
 
         md_path = os.path.join(session_dir, f"{lang_code}.md")
         headline = extract_markdown_headline(md_path)
+
+        # --- PRE-RESHAPE KURDISH TROJAN HORSE ---
+        if headline and lang_code in ['ckb', 'ku', 'kurdish']:
+            headline = headline.replace('ە', 'ة')
+
         layout = profile["image_layout"]
         placement = layout["raw_image_placement"]
 
-        # --- DYNAMIC RTL RESHAPER INSTANTIATION ---
-        # Forces ArabicReshaper to load language-specific ligature rules
-        # so characters like Kurdish ە or Farsi گ connect properly.
         custom_reshaper = None
         if is_rtl:
             reshaper_lang = 'Arabic'
@@ -292,8 +292,8 @@ def render_channel_assets(session_dir=None):
                     print(f"  [FATAL] Could not load font at: {font_path}")
                     font = ImageFont.load_default()
 
-                # Pass the custom reshaper to the wrap logic
-                lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper)
+                # Pass the lang_code to the wrap logic
+                lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper, lang_code)
                 line_height = font_size * line_spacing
                 total_height = len(lines) * line_height
 
@@ -313,7 +313,7 @@ def render_channel_assets(session_dir=None):
                     while font_size > 18:
                         font_size -= 2
                         font = ImageFont.truetype(font_path, font_size)
-                        lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper)
+                        lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper, lang_code)
                         line_height = font_size * line_spacing
                         total_height = len(lines) * line_height
                         if total_height <= max_h and len(lines) <= max_lines:
@@ -334,6 +334,8 @@ def render_channel_assets(session_dir=None):
 
                     try:
                         headline = shorten_headline_with_gemini(headline, lang_code, cached_profile.get("gemini_api_key"), active_model)
+                        if lang_code in ['ckb', 'ku', 'kurdish']:
+                            headline = headline.replace('ە', 'ة')
                         print(f"    [+] Gemini proposed: {headline}")
                     except Exception as e:
                         print(f"\n    [X] SERVER ERROR: Google's API rejected the request.")
@@ -344,6 +346,8 @@ def render_channel_assets(session_dir=None):
 
                 elif choice == "3":
                     headline = input("    [?] Enter shorter headline: ").strip()
+                    if lang_code in ['ckb', 'ku', 'kurdish']:
+                        headline = headline.replace('ە', 'ة')
                     font_size = base_font_size
 
             y_offset = max(0, (max_h - total_height) / 2)
@@ -352,11 +356,15 @@ def render_channel_assets(session_dir=None):
             for line in lines:
                 text_to_draw = line
                 if is_rtl:
-                    # Apply the dynamic language-specific reshaper before drawing
                     if custom_reshaper:
                         reshaped = custom_reshaper.reshape(line)
                     else:
                         reshaped = arabic_reshaper.reshape(line)
+
+                    # --- POST-RESHAPE KURDISH INTERCEPTOR ---
+                    if lang_code in ['ckb', 'ku', 'kurdish']:
+                        reshaped = reshaped.replace('\uFE93', '\uFEE9').replace('\uFE94', '\uFEEA')
+
                     text_to_draw = get_display(reshaped)
 
                 line_w = draw.textlength(text_to_draw, font=font)

@@ -117,6 +117,25 @@ def select_aoi_on_image(image_path):
     offset_x, offset_y = int(w * 0.5), int(h * 0.5)
 
     padded_img = Image.new("RGBA", (pad_w, pad_h), (40, 40, 40, 255))
+
+    # --- DRAW BACKGROUND GRID ---
+    draw_pad = ImageDraw.Draw(padded_img)
+    # Scale grid density dynamically relative to the image size
+    grid_spacing = max(50, int(w * 0.1))
+    grid_color = (90, 90, 90, 255)
+    # Ensure lines survive Tkinter's thumbnail downscaling
+    line_thickness = max(2, int(pad_w / 1000))
+
+    # Draw Vertical Lines
+    for x in range(offset_x % grid_spacing, pad_w, grid_spacing):
+        draw_pad.line([(x, 0), (x, pad_h)], fill=grid_color, width=line_thickness)
+
+    # Draw Horizontal Lines
+    for y in range(offset_y % grid_spacing, pad_h, grid_spacing):
+        draw_pad.line([(0, y), (pad_w, y)], fill=grid_color, width=line_thickness)
+    # ----------------------------
+
+    # Paste the original image over the grid so it only shows in the margins
     padded_img.paste(img, (offset_x, offset_y))
 
     preview = padded_img.copy()

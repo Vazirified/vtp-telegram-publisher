@@ -7,7 +7,7 @@ import shutil
 import asyncio
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 # --- Import Core Engines ---
 try:
@@ -175,15 +175,54 @@ def run_ingestion_gui():
     root = tk.Tk()
     root.title("EPLANET Pipeline: Data Ingestion")
     root.geometry("800x700")
-    root.configure(padx=20, pady=20)
+
+    # --- GLOBAL UI COLOR & FONT CONFIGURATION (DARK MODE) ---
+    BG_MAIN = "#1e1e1e"        # Main window background
+    BG_SEC = "#2d2d2d"         # Inputs and list backgrounds
+    FG_MAIN = "#e0e0e0"        # Main text color
+    FG_MUTED = "#888888"       # Disabled/Muted text
+    BTN_GRAY = "#424242"       # Default button
+    BTN_GREEN = "#2e7d32"      # Action button
+    BTN_BLUE = "#1565c0"       # Secondary action button
+    ACCENT_BLUE = "#64b5f6"    # Hyperlink/Path colors
+
+    FONT_MAIN = ("Segoe UI", 11)
+    FONT_BOLD = ("Segoe UI", 11, "bold")
+    FONT_SMALL = ("Segoe UI", 10)
+    FONT_SMALL_BOLD = ("Segoe UI", 10, "bold")
+    FONT_TITLE = ("Segoe UI", 12, "bold")
+
+    root.configure(padx=20, pady=20, bg=BG_MAIN)
+
+    # Configure ttk styles for the Treeview tables in Dark Mode
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("Treeview",
+                    background=BG_SEC,
+                    fieldbackground=BG_SEC,
+                    foreground=FG_MAIN,
+                    font=FONT_MAIN,
+                    rowheight=28,
+                    borderwidth=0)
+    style.configure("Treeview.Heading",
+                    background=BG_MAIN,
+                    foreground=FG_MAIN,
+                    font=FONT_SMALL_BOLD,
+                    borderwidth=1)
+    style.map("Treeview", background=[('selected', '#4a4a4a')])
+    style.map("Treeview.Heading", background=[('active', '#3a3a3a')])
 
     payload = {"text": None, "image_path": None}
 
-    # --- REUSABLE DIALOG BROWSER ---
+    # ==========================================
+    # 1. CHAT / DIALOG BROWSER (TREEVIEW)
+    # ==========================================
     def create_dialog_browser(title, next_step_callback, trigger_btn):
         trigger_btn.config(text="Fetching Chats...", state="disabled")
         all_dialogs = []
         state = {'last_date': None, 'win': None, 'listbox': None, 'load_btn': None}
+
+        columns = ("Chat Name",)
 
         def load_dialogs():
             if state['load_btn']: state['load_btn'].config(text="Loading...", state="disabled")
@@ -200,30 +239,38 @@ def run_ingestion_gui():
                 state['win'] = tk.Toplevel(root)
                 state['win'].title(title)
                 state['win'].geometry("450x550")
+                state['win'].configure(bg=BG_MAIN)
 
-                tk.Label(state['win'], text="Recent Telegram Chats:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 5), padx=10)
+                tk.Label(state['win'], text="Recent Telegram Chats:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 5), padx=10)
 
-                list_frame = tk.Frame(state['win'])
+                list_frame = tk.Frame(state['win'], bg=BG_MAIN)
                 list_frame.pack(fill="both", expand=True, padx=10, pady=5)
                 scrollbar = tk.Scrollbar(list_frame)
                 scrollbar.pack(side="right", fill="y")
-                state['listbox'] = tk.Listbox(list_frame, font=("Arial", 11), yscrollcommand=scrollbar.set)
+
+                state['listbox'] = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", yscrollcommand=scrollbar.set)
+                state['listbox'].heading("Chat Name", text="Chat Name")
+                state['listbox'].column("Chat Name", anchor="w")
+
                 state['listbox'].pack(side="left", fill="both", expand=True)
                 scrollbar.config(command=state['listbox'].yview)
 
                 def on_select(event=None):
-                    selected_idx = state['listbox'].curselection()
-                    if not selected_idx: return
-                    selected_dialog = all_dialogs[selected_idx[0]]
-                    state['win'].destroy()
-                    next_step_callback(selected_dialog['id'], selected_dialog['name'])
+                    selected_items = state['listbox'].selection()
+                    if not selected_items: return
+
+                    selected_dialog_id = selected_items[0]
+                    selected_dialog = next((d for d in all_dialogs if str(d['id']) == selected_dialog_id), None)
+                    if selected_dialog:
+                        state['win'].destroy()
+                        next_step_callback(selected_dialog['id'], selected_dialog['name'])
 
                 state['listbox'].bind("<Double-Button-1>", on_select)
 
-                btn_frame = tk.Frame(state['win'])
+                btn_frame = tk.Frame(state['win'], bg=BG_MAIN)
                 btn_frame.pack(fill="x", padx=10, pady=10)
-                tk.Button(btn_frame, text="View Contents", command=on_select, bg="#4CAF50", fg="white", font=("Arial", 10, "bold")).pack(side="left", expand=True, fill="x", padx=(0, 5))
-                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_dialogs, bg="#2196F3", fg="white", font=("Arial", 10, "bold"))
+                tk.Button(btn_frame, text="View Contents", command=on_select, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4).pack(side="left", expand=True, fill="x", padx=(0, 5))
+                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_dialogs, bg=BTN_BLUE, fg=FG_MAIN, activebackground="#1976d2", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
                 state['load_btn'].pack(side="right", expand=True, fill="x", padx=(5, 0))
 
             if not new_dialogs:
@@ -232,7 +279,7 @@ def run_ingestion_gui():
 
             for d in new_dialogs:
                 all_dialogs.append(d)
-                state['listbox'].insert(tk.END, d['name'])
+                state['listbox'].insert("", tk.END, iid=str(d['id']), values=(d['name'],))
 
             state['last_date'] = new_dialogs[-1]['date']
             if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
@@ -246,23 +293,26 @@ def run_ingestion_gui():
 
 
     # ==========================================
-    # 1. TEXT INGESTION SECTION
+    # 2. TEXT INGESTION SECTION
     # ==========================================
-    text_header_frame = tk.Frame(root)
+    text_header_frame = tk.Frame(root, bg=BG_MAIN)
     text_header_frame.pack(fill="x", pady=(0, 5))
-    tk.Label(text_header_frame, text="1. Source Text (Paste manually or Fetch):", font=("Arial", 11, "bold")).pack(side="left")
+    tk.Label(text_header_frame, text="1. Source Text (Paste manually or Fetch):", font=FONT_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(side="left")
 
-    fetch_txt_btn = tk.Button(text_header_frame, text="Fetch Text from Telegram", bg="#e0e0e0", width=22)
+    fetch_txt_btn = tk.Button(text_header_frame, text="Fetch Text from Telegram", font=FONT_SMALL, bg=BTN_GRAY, fg=FG_MAIN, activebackground="#555555", activeforeground="white", relief="flat", width=22)
     fetch_txt_btn._original_text = "Fetch Text from Telegram"
     fetch_txt_btn.pack(side="right")
 
-    text_input = tk.Text(root, height=15, width=80, font=("Arial", 11), wrap="word")
+    # The insertbackground controls the color of the typing cursor!
+    text_input = tk.Text(root, height=15, width=80, font=FONT_MAIN, wrap="word", bg=BG_SEC, fg=FG_MAIN, insertbackground=FG_MAIN, relief="flat")
     text_input.pack(pady=5, fill="both", expand=True)
 
     def open_message_browser(dialog_id, dialog_name):
         fetch_txt_btn.config(text="Fetching...", state="disabled")
         all_messages = []
-        state = {'last_id': 0, 'win': None, 'listbox': None, 'load_btn': None}
+        state = {'last_id': 0, 'win': None, 'listbox': None, 'load_btn': None, 'multi_select_var': None}
+
+        text_cols = ("Date", "Message Text")
 
         def load_msgs():
             if state['load_btn']: state['load_btn'].config(text="Loading...", state="disabled")
@@ -276,28 +326,58 @@ def run_ingestion_gui():
                     return
                 state['win'] = tk.Toplevel(root)
                 state['win'].title(f"Texts from: {dialog_name}")
-                state['win'].geometry("750x450")
-                tk.Label(state['win'], text="Select messages (Ctrl+Click for multiple):", font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 5), padx=10)
+                state['win'].geometry("850x450")
+                state['win'].configure(bg=BG_MAIN)
+                tk.Label(state['win'], text="Select messages:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 0), padx=10)
 
-                list_frame = tk.Frame(state['win'])
+                state['multi_select_var'] = tk.BooleanVar(value=True)
+                # Checkbutton requires selectcolor for the box itself
+                tk.Checkbutton(state['win'], text="Easy Multi-Select (Click to toggle, no Ctrl needed)", variable=state['multi_select_var'], font=FONT_SMALL, bg=BG_MAIN, fg=FG_MAIN, selectcolor=BG_SEC, activebackground=BG_MAIN, activeforeground=FG_MAIN).pack(anchor="w", padx=10, pady=(0, 5))
+
+                list_frame = tk.Frame(state['win'], bg=BG_MAIN)
                 list_frame.pack(fill="both", expand=True, padx=10, pady=5)
                 scrollbar = tk.Scrollbar(list_frame)
                 scrollbar.pack(side="right", fill="y")
-                state['listbox'] = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, font=("Arial", 10), yscrollcommand=scrollbar.set)
+
+                state['listbox'] = ttk.Treeview(list_frame, columns=text_cols, show="headings", selectmode="extended", yscrollcommand=scrollbar.set)
+
+                state['listbox'].heading("Date", text="Timestamp")
+                state['listbox'].column("Date", width=140, anchor="center", stretch=False)
+
+                state['listbox'].heading("Message Text", text="Message Text")
+                state['listbox'].column("Message Text", anchor="e")
+
                 state['listbox'].pack(side="left", fill="both", expand=True)
                 scrollbar.config(command=state['listbox'].yview)
 
+                def on_tree_click(event):
+                    if state['multi_select_var'].get():
+                        region = state['listbox'].identify("region", event.x, event.y)
+                        if region in ("cell", "tree", "indicator"):
+                            item_id = state['listbox'].identify_row(event.y)
+                            if item_id:
+                                if item_id in state['listbox'].selection():
+                                    state['listbox'].selection_remove(item_id)
+                                else:
+                                    state['listbox'].selection_add(item_id)
+                                state['listbox'].focus(item_id)
+                                return "break"
+
+                state['listbox'].bind("<Button-1>", on_tree_click)
+
                 def on_insert():
-                    selected_indices = state['listbox'].curselection()
-                    if not selected_indices: return
-                    for idx in selected_indices:
-                        text_input.insert(tk.END, all_messages[idx]['text'] + "\n\n")
+                    selected_items = state['listbox'].selection()
+                    if not selected_items: return
+                    for item_id in selected_items:
+                        msg_data = next((m for m in all_messages if str(m['id']) == item_id), None)
+                        if msg_data:
+                            text_input.insert(tk.END, msg_data['text'] + "\n\n")
                     state['win'].destroy()
 
-                btn_frame = tk.Frame(state['win'])
+                btn_frame = tk.Frame(state['win'], bg=BG_MAIN)
                 btn_frame.pack(fill="x", padx=10, pady=10)
-                tk.Button(btn_frame, text="Insert Selected", command=on_insert, bg="#4CAF50", fg="white", font=("Arial", 10, "bold")).pack(side="left", expand=True, fill="x", padx=(0, 5))
-                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_msgs, bg="#2196F3", fg="white", font=("Arial", 10, "bold"))
+                tk.Button(btn_frame, text="Insert Selected", command=on_insert, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4).pack(side="left", expand=True, fill="x", padx=(0, 5))
+                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_msgs, bg=BTN_BLUE, fg=FG_MAIN, activebackground="#1976d2", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
                 state['load_btn'].pack(side="right", expand=True, fill="x", padx=(5, 0))
 
             if not new_msgs:
@@ -306,8 +386,8 @@ def run_ingestion_gui():
 
             for msg in new_msgs:
                 all_messages.append(msg)
-                preview = msg['text'].replace('\n', ' ')[:100] + "..."
-                state['listbox'].insert(tk.END, f"[{msg['date']}] {preview}")
+                preview = msg['text'].replace('\n', ' ')
+                state['listbox'].insert("", tk.END, iid=str(msg['id']), values=(msg['date'], preview))
 
             state['last_id'] = new_msgs[-1]['id']
             if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
@@ -323,29 +403,27 @@ def run_ingestion_gui():
 
 
     # ==========================================
-    # 2. IMAGE / MEDIA INGESTION SECTION
+    # 3. IMAGE / MEDIA INGESTION SECTION
     # ==========================================
-    tk.Label(root, text="\n2. Select Raw Image / File:", font=("Arial", 11, "bold")).pack(anchor="w")
+    tk.Label(root, text="\n2. Select Raw Image / File:", font=FONT_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w")
 
-    img_frame = tk.Frame(root)
+    img_frame = tk.Frame(root, bg=BG_MAIN)
     img_frame.pack(fill="x", pady=5)
 
     img_path_var = tk.StringVar()
-    # Expand out the label to cleanly push the action buttons to the right side
-    img_label = tk.Label(img_frame, textvariable=img_path_var, fg="blue", bg="#f0f0f0", anchor="w")
-    img_label.pack(side="left", fill="x", expand=True, padx=(0, 10))
+    img_label = tk.Label(img_frame, textvariable=img_path_var, font=FONT_SMALL, fg=ACCENT_BLUE, bg=BG_SEC, anchor="w", padx=5)
+    img_label.pack(side="left", fill="x", expand=True, padx=(0, 10), ipady=3)
 
-    # A sub-frame anchored right keeps the buttons cleanly grouped
-    action_btn_frame = tk.Frame(img_frame)
+    action_btn_frame = tk.Frame(img_frame, bg=BG_MAIN)
     action_btn_frame.pack(side="right")
 
     def browse_image():
         filepath = filedialog.askopenfilename(title="Select Raw Image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
         if filepath: img_path_var.set(filepath)
 
-    tk.Button(action_btn_frame, text="Browse Local...", command=browse_image, width=15).pack(side="left", padx=(0, 10))
+    tk.Button(action_btn_frame, text="Browse Local...", font=FONT_SMALL, command=browse_image, bg=BTN_GRAY, fg=FG_MAIN, activebackground="#555555", activeforeground="white", relief="flat", width=15).pack(side="left", padx=(0, 10))
 
-    fetch_img_btn = tk.Button(action_btn_frame, text="Fetch from Telegram", bg="#e0e0e0", width=22)
+    fetch_img_btn = tk.Button(action_btn_frame, text="Fetch from Telegram", font=FONT_SMALL, bg=BTN_GRAY, fg=FG_MAIN, activebackground="#555555", activeforeground="white", relief="flat", width=22)
     fetch_img_btn._original_text = "Fetch from Telegram"
     fetch_img_btn.pack(side="left")
 
@@ -353,6 +431,8 @@ def run_ingestion_gui():
         fetch_img_btn.config(text="Fetching Messages...", state="disabled")
         all_msgs = []
         state = {'last_id': 0, 'win': None, 'listbox': None, 'load_btn': None, 'dl_btn': None}
+
+        media_cols = ("Date", "Type", "Message Text")
 
         def load_context():
             if state['load_btn']: state['load_btn'].config(text="Loading...", state="disabled")
@@ -366,23 +446,49 @@ def run_ingestion_gui():
                     return
                 state['win'] = tk.Toplevel(root)
                 state['win'].title(f"Media & Context from: {dialog_name}")
-                state['win'].geometry("800x500")
-                tk.Label(state['win'], text="Select a message containing a file/photo to download:", font=("Arial", 10, "bold")).pack(anchor="w", pady=(10, 5), padx=10)
+                state['win'].geometry("900x500")
+                state['win'].configure(bg=BG_MAIN)
+                tk.Label(state['win'], text="Select a message containing a file/photo to download:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 5), padx=10)
 
-                list_frame = tk.Frame(state['win'])
+                list_frame = tk.Frame(state['win'], bg=BG_MAIN)
                 list_frame.pack(fill="both", expand=True, padx=10, pady=5)
                 scrollbar = tk.Scrollbar(list_frame)
                 scrollbar.pack(side="right", fill="y")
-                state['listbox'] = tk.Listbox(list_frame, selectmode=tk.SINGLE, font=("Arial", 10), yscrollcommand=scrollbar.set)
+
+                state['listbox'] = ttk.Treeview(list_frame, selectmode="browse", columns=media_cols, show="headings", yscrollcommand=scrollbar.set)
+
+                state['listbox'].heading("Date", text="Timestamp")
+                state['listbox'].column("Date", width=140, anchor="center", stretch=False)
+
+                state['listbox'].heading("Type", text="Type")
+                state['listbox'].column("Type", width=100, anchor="center", stretch=False)
+
+                state['listbox'].heading("Message Text", text="Message Text")
+                state['listbox'].column("Message Text", anchor="e")
+
                 state['listbox'].pack(side="left", fill="both", expand=True)
                 scrollbar.config(command=state['listbox'].yview)
 
-                def on_download():
-                    selected_indices = state['listbox'].curselection()
-                    if not selected_indices: return
-                    target_msg = all_msgs[selected_indices[0]]
+                state['listbox'].tag_configure("disabled", foreground=FG_MUTED)
 
-                    if not target_msg['has_media']:
+                def on_select_check(event):
+                    selected_items = state['listbox'].selection()
+                    if not selected_items: return
+                    item_id = selected_items[0]
+                    tags = state['listbox'].item(item_id, "tags")
+                    if "disabled" in tags:
+                        state['listbox'].selection_remove(item_id)
+
+                state['listbox'].bind("<<TreeviewSelect>>", on_select_check)
+
+                def on_download():
+                    selected_items = state['listbox'].selection()
+                    if not selected_items: return
+                    item_id = selected_items[0]
+
+                    target_msg = next((m for m in all_msgs if str(m['id']) == item_id), None)
+
+                    if not target_msg or not target_msg['has_media']:
                         messagebox.showwarning("Invalid Selection", "This message does not contain a file or photo.\nPlease select a message marked with 📎 MEDIA.")
                         return
 
@@ -400,11 +506,11 @@ def run_ingestion_gui():
 
                     download_telegram_media_async(dialog_id, target_msg['id'], on_dl_success, on_dl_error)
 
-                btn_frame = tk.Frame(state['win'])
+                btn_frame = tk.Frame(state['win'], bg=BG_MAIN)
                 btn_frame.pack(fill="x", padx=10, pady=10)
-                state['dl_btn'] = tk.Button(btn_frame, text="Download & Use", command=on_download, bg="#4CAF50", fg="white", font=("Arial", 10, "bold"))
+                state['dl_btn'] = tk.Button(btn_frame, text="Download & Use", command=on_download, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
                 state['dl_btn'].pack(side="left", expand=True, fill="x", padx=(0, 5))
-                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_context, bg="#2196F3", fg="white", font=("Arial", 10, "bold"))
+                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_context, bg=BTN_BLUE, fg=FG_MAIN, activebackground="#1976d2", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
                 state['load_btn'].pack(side="right", expand=True, fill="x", padx=(5, 0))
 
             if not new_msgs:
@@ -413,9 +519,14 @@ def run_ingestion_gui():
 
             for msg in new_msgs:
                 all_msgs.append(msg)
-                snippet = msg['text'][:100] + "..." if len(msg['text']) > 100 else msg['text']
-                prefix = "📎 MEDIA:" if msg['has_media'] else "💬 TEXT: "
-                state['listbox'].insert(tk.END, f"[{msg['date']}] {prefix} {snippet}")
+                snippet = msg['text'].replace('\n', ' ')
+                msg_type = "📎 MEDIA" if msg['has_media'] else "💬 TEXT"
+
+                item_tags = ()
+                if not msg['has_media']:
+                    item_tags = ("disabled",)
+
+                state['listbox'].insert("", tk.END, iid=str(msg['id']), values=(msg['date'], msg_type, snippet), tags=item_tags)
 
             state['last_id'] = new_msgs[-1]['id']
             if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
@@ -431,11 +542,9 @@ def run_ingestion_gui():
 
 
     # ==========================================
-    # 3. SUBMISSION HANDLER
+    # 4. SUBMISSION HANDLER
     # ==========================================
-
-    # Sub-frame explicitly used to anchor the Start button to the right
-    submit_frame = tk.Frame(root)
+    submit_frame = tk.Frame(root, bg=BG_MAIN)
     submit_frame.pack(fill="x", pady=(20, 0))
 
     def on_submit():
@@ -454,8 +563,7 @@ def run_ingestion_gui():
         root.quit()
         root.destroy()
 
-    # The button is now appropriately sized and pushed to the right side
-    tk.Button(submit_frame, text="Start Processing Pipeline", command=on_submit, bg="#4CAF50", fg="white", font=("Arial", 12, "bold"), width=30, pady=8).pack(side="right")
+    tk.Button(submit_frame, text="Start Processing Pipeline", command=on_submit, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_TITLE, width=30, pady=8, relief="flat").pack(side="right")
 
     def on_close():
         root.quit()

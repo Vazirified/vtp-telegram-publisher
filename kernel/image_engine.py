@@ -2,7 +2,7 @@ import os
 import glob
 import json
 import tkinter as tk
-from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -262,8 +262,18 @@ def render_channel_assets(session_dir=None):
             snippet = ImageOps.fit(raw_img, target_size, centering=(0.5, 0.5))
 
         canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
-        canvas = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 255))
+
+        # --- BLURRED BACKGROUND IMPLEMENTATION ---
+        # 1. Take the original raw image for the background
+        bg_source = Image.open(raw_path).convert("RGBA")
+        # 2. Fit it to completely fill the canvas
+        blurred_bg = ImageOps.fit(bg_source, (canvas_w, canvas_h), centering=(0.5, 0.5))
+        # 3. Apply heavy Gaussian blur
+        canvas = blurred_bg.filter(ImageFilter.GaussianBlur(radius=30))
+
+        # Paste the crisp snippet directly over the blurred canvas
         canvas.paste(snippet, (placement["x"], placement["y"]), snippet)
+        # -----------------------------------------
 
         template_relative_path = layout.get("template_overlay_path")
         overlay = Image.open(os.path.join(PROJECT_ROOT, template_relative_path)).convert("RGBA")

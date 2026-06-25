@@ -2,6 +2,8 @@ import os
 import re
 import json
 import datetime
+import sys
+import time
 from google import genai
 from google.genai import types
 
@@ -17,6 +19,42 @@ GEMINI_KEYS_FILE = os.path.join(CREDENTIALS_DIR, "gemini_keys.json")
 TELEGRAM_CLIPBOARD_REGEX = re.compile(
     r'\[\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*[^:]+\s*:\s*'
 )
+
+def input_with_timeout(prompt_text, default_value, timeout=5):
+    """Cross-platform input with a timeout and default fallback."""
+    print(f"{prompt_text} [Auto-default: '{default_value}' in {timeout}s]: ", end='', flush=True)
+    try:
+        import msvcrt
+        start_time = time.time()
+        input_str = ""
+        while True:
+            if msvcrt.kbhit():
+                char = msvcrt.getwch()
+                if char in ('\r', '\n'):
+                    print()
+                    return input_str if input_str else str(default_value)
+                elif char == '\b':
+                    if len(input_str) > 0:
+                        input_str = input_str[:-1]
+                        sys.stdout.write('\b \b')
+                        sys.stdout.flush()
+                else:
+                    input_str += char
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+            if time.time() - start_time > timeout:
+                print(f"\n  [!] Timeout. Using default: {default_value}")
+                return str(default_value)
+            time.sleep(0.05)
+    except ImportError:
+        import select
+        i, o, e = select.select([sys.stdin], [], [], timeout)
+        if i:
+            res = sys.stdin.readline().strip("\n")
+            return res if res else str(default_value)
+        else:
+            print(f"\n  [!] Timeout. Using default: {default_value}")
+            return str(default_value)
 
 def load_gemini_credentials():
     """Reads localized credential and model tracking profiles from disk."""
@@ -95,7 +133,8 @@ def select_operational_model(cached_profile):
     print(f"  [Enter] Reuse Last Verified Default ({last_model})")
     print("========================================================")
 
-    choice = input("[?] Select engine target lane: ").strip()
+    # 5-SECOND TIMEOUT APPLIED HERE
+    choice = input_with_timeout("[?] Select engine target lane", "").strip()
 
     selected_model = model_matrix.get(choice, last_model)
     print(f"[OK] Pipeline routing locked to engine target: {selected_model}\n")

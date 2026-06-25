@@ -1,6 +1,8 @@
 import os
 import glob
 import json
+import sys
+import time
 import tkinter as tk
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter
 import arabic_reshaper
@@ -19,6 +21,42 @@ CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
 WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "_workspace")
 CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
 GEMINI_KEYS_FILE = os.path.join(CREDENTIALS_DIR, "gemini_keys.json")
+
+def input_with_timeout(prompt_text, default_value, timeout=5):
+    """Cross-platform input with a timeout and default fallback."""
+    print(f"{prompt_text} [Auto-default: '{default_value}' in {timeout}s]: ", end='', flush=True)
+    try:
+        import msvcrt
+        start_time = time.time()
+        input_str = ""
+        while True:
+            if msvcrt.kbhit():
+                char = msvcrt.getwch()
+                if char in ('\r', '\n'):
+                    print()
+                    return input_str if input_str else str(default_value)
+                elif char == '\b':
+                    if len(input_str) > 0:
+                        input_str = input_str[:-1]
+                        sys.stdout.write('\b \b')
+                        sys.stdout.flush()
+                else:
+                    input_str += char
+                    sys.stdout.write(char)
+                    sys.stdout.flush()
+            if time.time() - start_time > timeout:
+                print(f"\n  [!] Timeout. Using default: {default_value}")
+                return str(default_value)
+            time.sleep(0.05)
+    except ImportError:
+        import select
+        i, o, e = select.select([sys.stdin], [], [], timeout)
+        if i:
+            res = sys.stdin.readline().strip("\n")
+            return res if res else str(default_value)
+        else:
+            print(f"\n  [!] Timeout. Using default: {default_value}")
+            return str(default_value)
 
 def load_gemini_credentials():
     if os.path.exists(GEMINI_KEYS_FILE):
@@ -69,7 +107,9 @@ def select_operational_model(cached_profile):
     print(f"  [Enter] Reuse Last Verified Default ({last_model})")
     print("========================================================")
 
-    choice = input("[?] Select engine target lane: ").strip()
+    # 5-SECOND TIMEOUT APPLIED HERE
+    choice = input_with_timeout("[?] Select engine target lane", "").strip()
+
     selected_model = model_matrix.get(choice, last_model)
     save_gemini_credentials(api_token, selected_model)
     return selected_model
@@ -184,11 +224,13 @@ def render_channel_assets(session_dir=None):
     raw_path = raw_images[0]
 
     global_aoi = None
-    if input("[?] Define manual AOI? (y/n): ").lower() in ['y', 'yes']:
+    # 5-SECOND TIMEOUT APPLIED HERE
+    aoi_choice = input_with_timeout("[?] Define manual AOI? (y/n)", "n")
+    if aoi_choice.lower() in ['y', 'yes']:
         global_aoi = select_aoi_on_image(raw_path)
 
-    # --- NEW: PROMPT FOR BLUR RADIUS ---
-    blur_input = input("[?] Enter background blur radius (Press Enter for default 30): ").strip()
+    # 5-SECOND TIMEOUT APPLIED HERE
+    blur_input = input_with_timeout("[?] Enter background blur radius", "30").strip()
     try:
         blur_radius = int(blur_input) if blur_input else 30
     except ValueError:
@@ -319,7 +361,8 @@ def render_channel_assets(session_dir=None):
                 print("    2. Ask Gemini to rewrite/shorten the headline")
                 print("    3. Type a manual override")
 
-                choice = input("Select an option (1/2/3): ").strip()
+                # 5-SECOND TIMEOUT APPLIED HERE
+                choice = input_with_timeout("Select an option (1/2/3)", "2").strip()
 
                 if choice == "1":
                     while font_size > 18:
@@ -341,6 +384,7 @@ def render_channel_assets(session_dir=None):
                         print("    [X] Gemini API key missing. Choose another option.")
                         continue
 
+                    # The `select_operational_model` function uses our new input_with_timeout wrapper internally!
                     active_model = select_operational_model(cached_profile)
                     print(f"    [~] Asking Gemini to shorten...")
 

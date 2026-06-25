@@ -303,7 +303,6 @@ def run_ingestion_gui():
     fetch_txt_btn._original_text = "Fetch Text from Telegram"
     fetch_txt_btn.pack(side="right")
 
-    # The insertbackground controls the color of the typing cursor!
     text_input = tk.Text(root, height=15, width=80, font=FONT_MAIN, wrap="word", bg=BG_SEC, fg=FG_MAIN, insertbackground=FG_MAIN, relief="flat")
     text_input.pack(pady=5, fill="both", expand=True)
 
@@ -331,7 +330,6 @@ def run_ingestion_gui():
                 tk.Label(state['win'], text="Select messages:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 0), padx=10)
 
                 state['multi_select_var'] = tk.BooleanVar(value=True)
-                # Checkbutton requires selectcolor for the box itself
                 tk.Checkbutton(state['win'], text="Easy Multi-Select (Click to toggle, no Ctrl needed)", variable=state['multi_select_var'], font=FONT_SMALL, bg=BG_MAIN, fg=FG_MAIN, selectcolor=BG_SEC, activebackground=BG_MAIN, activeforeground=FG_MAIN).pack(anchor="w", padx=10, pady=(0, 5))
 
                 list_frame = tk.Frame(state['win'], bg=BG_MAIN)
@@ -387,6 +385,9 @@ def run_ingestion_gui():
             for msg in new_msgs:
                 all_messages.append(msg)
                 preview = msg['text'].replace('\n', ' ')
+                # CUTTING STRATEGY: Limit length to 90 chars and append an ellipsis
+                if len(preview) > 90:
+                    preview = preview[:87] + "..."
                 state['listbox'].insert("", tk.END, iid=str(msg['id']), values=(msg['date'], preview))
 
             state['last_id'] = new_msgs[-1]['id']
@@ -520,6 +521,9 @@ def run_ingestion_gui():
             for msg in new_msgs:
                 all_msgs.append(msg)
                 snippet = msg['text'].replace('\n', ' ')
+                # CUTTING STRATEGY: Limit length to 90 chars and append an ellipsis
+                if len(snippet) > 90:
+                    snippet = snippet[:87] + "..."
                 msg_type = "📎 MEDIA" if msg['has_media'] else "💬 TEXT"
 
                 item_tags = ()

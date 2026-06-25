@@ -198,6 +198,8 @@ def render_channel_assets(session_dir=None):
         # --- PRE-RESHAPE KURDISH TROJAN HORSE ---
         if headline and lang_code in ['ckb', 'ku', 'kurdish']:
             headline = headline.replace('ە', 'ة')
+            # Graceful font degradation for missing Kurdish glyphs
+            headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
 
         layout = profile["image_layout"]
         placement = layout["raw_image_placement"]
@@ -346,6 +348,7 @@ def render_channel_assets(session_dir=None):
                         headline = shorten_headline_with_gemini(headline, lang_code, cached_profile.get("gemini_api_key"), active_model)
                         if lang_code in ['ckb', 'ku', 'kurdish']:
                             headline = headline.replace('ە', 'ة')
+                            headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
                         print(f"    [+] Gemini proposed: {headline}")
                     except Exception as e:
                         print(f"\n    [X] SERVER ERROR: Google's API rejected the request.")
@@ -358,6 +361,7 @@ def render_channel_assets(session_dir=None):
                     headline = input("    [?] Enter shorter headline: ").strip()
                     if lang_code in ['ckb', 'ku', 'kurdish']:
                         headline = headline.replace('ە', 'ة')
+                        headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
                     font_size = base_font_size
 
             y_offset = max(0, (max_h - total_height) / 2)

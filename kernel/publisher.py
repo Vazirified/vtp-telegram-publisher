@@ -124,7 +124,8 @@ def select_channels_ui(channels_dict):
 
 async def compile_and_send_post(client, target_peer, session_dir, channel_internal_name, log_prefix=""):
     """Reloads the LATEST image and text from disk and sends them via Telethon."""
-    img_path = os.path.join(session_dir, f"{channel_internal_name}_broadcast.png")
+    # Updated to look for the new HD .jpg file instead of .png
+    img_path = os.path.join(session_dir, f"{channel_internal_name}_broadcast.jpg")
     txt_path = os.path.join(session_dir, f"{channel_internal_name}_caption.txt")
 
     if not os.path.exists(img_path):

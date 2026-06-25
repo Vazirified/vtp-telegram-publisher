@@ -98,7 +98,6 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, l
             else:
                 reshaped = arabic_reshaper.reshape(test_line)
 
-            # --- POST-RESHAPE KURDISH INTERCEPTOR ---
             if lang_code in ['ckb', 'ku', 'kurdish']:
                 reshaped = reshaped.replace('\uFE93', '\uFEE9').replace('\uFE94', '\uFEEA')
 
@@ -195,10 +194,8 @@ def render_channel_assets(session_dir=None):
         md_path = os.path.join(session_dir, f"{lang_code}.md")
         headline = extract_markdown_headline(md_path)
 
-        # --- PRE-RESHAPE KURDISH TROJAN HORSE ---
         if headline and lang_code in ['ckb', 'ku', 'kurdish']:
             headline = headline.replace('ە', 'ة')
-            # Graceful font degradation for missing Kurdish glyphs
             headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
 
         layout = profile["image_layout"]
@@ -265,17 +262,11 @@ def render_channel_assets(session_dir=None):
 
         canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
 
-        # --- BLURRED BACKGROUND IMPLEMENTATION ---
-        # 1. Take the original raw image for the background
         bg_source = Image.open(raw_path).convert("RGBA")
-        # 2. Fit it to completely fill the canvas
         blurred_bg = ImageOps.fit(bg_source, (canvas_w, canvas_h), centering=(0.5, 0.5))
-        # 3. Apply heavy Gaussian blur
         canvas = blurred_bg.filter(ImageFilter.GaussianBlur(radius=30))
 
-        # Paste the crisp snippet directly over the blurred canvas
         canvas.paste(snippet, (placement["x"], placement["y"]), snippet)
-        # -----------------------------------------
 
         template_relative_path = layout.get("template_overlay_path")
         overlay = Image.open(os.path.join(PROJECT_ROOT, template_relative_path)).convert("RGBA")
@@ -304,7 +295,6 @@ def render_channel_assets(session_dir=None):
                     print(f"  [FATAL] Could not load font at: {font_path}")
                     font = ImageFont.load_default()
 
-                # Pass the lang_code to the wrap logic
                 lines = wrap_text(headline, font, max_w, draw, is_rtl, custom_reshaper, lang_code)
                 line_height = font_size * line_spacing
                 total_height = len(lines) * line_height
@@ -375,7 +365,6 @@ def render_channel_assets(session_dir=None):
                     else:
                         reshaped = arabic_reshaper.reshape(line)
 
-                    # --- POST-RESHAPE KURDISH INTERCEPTOR ---
                     if lang_code in ['ckb', 'ku', 'kurdish']:
                         reshaped = reshaped.replace('\uFE93', '\uFEE9').replace('\uFE94', '\uFEEA')
 
@@ -392,8 +381,14 @@ def render_channel_assets(session_dir=None):
                 draw.text((line_start_x, current_y), text_to_draw, font=font, fill=color)
                 current_y += line_height
 
-        canvas.save(os.path.join(session_dir, f"{channel_name}_broadcast.png"))
-        print(f"  [+] Generated: {channel_name}_broadcast.png")
+        # --- HD EXPORT LOGIC ---
+        # 1. Flatten the RGBA transparency to standard RGB
+        final_hd_image = canvas.convert("RGB")
+        # 2. Save as maximum quality JPEG with zero chroma subsampling
+        out_path = os.path.join(session_dir, f"{channel_name}_broadcast.jpg")
+        final_hd_image.save(out_path, "JPEG", quality=100, subsampling=0)
+
+        print(f"  [+] Generated: {channel_name}_broadcast.jpg")
 
 if __name__ == "__main__":
     render_channel_assets()

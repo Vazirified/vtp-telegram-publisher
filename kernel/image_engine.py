@@ -187,6 +187,14 @@ def render_channel_assets(session_dir=None):
     if input("[?] Define manual AOI? (y/n): ").lower() in ['y', 'yes']:
         global_aoi = select_aoi_on_image(raw_path)
 
+    # --- NEW: PROMPT FOR BLUR RADIUS ---
+    blur_input = input("[?] Enter background blur radius (Press Enter for default 30): ").strip()
+    try:
+        blur_radius = int(blur_input) if blur_input else 30
+    except ValueError:
+        print("  [!] Invalid input. Defaulting to 30.")
+        blur_radius = 30
+
     for channel_name, profile in config["channels"].items():
         lang_code = profile.get("language", "en").lower()
         is_rtl = profile.get("is_rtl", False)
@@ -262,9 +270,11 @@ def render_channel_assets(session_dir=None):
 
         canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
 
+        # --- BLURRED BACKGROUND IMPLEMENTATION ---
         bg_source = Image.open(raw_path).convert("RGBA")
         blurred_bg = ImageOps.fit(bg_source, (canvas_w, canvas_h), centering=(0.5, 0.5))
-        canvas = blurred_bg.filter(ImageFilter.GaussianBlur(radius=30))
+        # Use the dynamic blur_radius defined by the user
+        canvas = blurred_bg.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
         canvas.paste(snippet, (placement["x"], placement["y"]), snippet)
 
@@ -382,9 +392,7 @@ def render_channel_assets(session_dir=None):
                 current_y += line_height
 
         # --- HD EXPORT LOGIC ---
-        # 1. Flatten the RGBA transparency to standard RGB
         final_hd_image = canvas.convert("RGB")
-        # 2. Save as maximum quality JPEG with zero chroma subsampling
         out_path = os.path.join(session_dir, f"{channel_name}_broadcast.jpg")
         final_hd_image.save(out_path, "JPEG", quality=100, subsampling=0)
 

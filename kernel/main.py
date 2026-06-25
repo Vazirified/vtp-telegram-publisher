@@ -174,7 +174,16 @@ def download_telegram_media_async(target_entity_id, message_id, callback, error_
 def run_ingestion_gui():
     root = tk.Tk()
     root.title("EPLANET Pipeline: Data Ingestion")
-    root.geometry("800x700")
+
+    # --- DYNAMIC SCREEN QUADRANT LOGIC ---
+    screen_w = root.winfo_screenwidth()
+    screen_h = root.winfo_screenheight()
+    quad_w = screen_w // 2
+    quad_h = screen_h // 2
+
+    # Format: "width x height + x_offset + y_offset"
+    quadrant_geometry = f"{quad_w}x{quad_h}+0+0"
+    root.geometry(quadrant_geometry)
 
     # --- GLOBAL UI COLOR & FONT CONFIGURATION (DARK MODE) ---
     BG_MAIN = "#1e1e1e"        # Main window background
@@ -238,7 +247,8 @@ def run_ingestion_gui():
 
                 state['win'] = tk.Toplevel(root)
                 state['win'].title(title)
-                state['win'].geometry("450x550")
+                # Apply dynamic quadrant geometry
+                state['win'].geometry(quadrant_geometry)
                 state['win'].configure(bg=BG_MAIN)
 
                 tk.Label(state['win'], text="Recent Telegram Chats:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 5), padx=10)
@@ -325,7 +335,8 @@ def run_ingestion_gui():
                     return
                 state['win'] = tk.Toplevel(root)
                 state['win'].title(f"Texts from: {dialog_name}")
-                state['win'].geometry("850x450")
+                # Apply dynamic quadrant geometry
+                state['win'].geometry(quadrant_geometry)
                 state['win'].configure(bg=BG_MAIN)
                 tk.Label(state['win'], text="Select messages:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 0), padx=10)
 
@@ -447,7 +458,8 @@ def run_ingestion_gui():
                     return
                 state['win'] = tk.Toplevel(root)
                 state['win'].title(f"Media & Context from: {dialog_name}")
-                state['win'].geometry("900x500")
+                # Apply dynamic quadrant geometry
+                state['win'].geometry(quadrant_geometry)
                 state['win'].configure(bg=BG_MAIN)
                 tk.Label(state['win'], text="Select a message containing a file/photo to download:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 5), padx=10)
 

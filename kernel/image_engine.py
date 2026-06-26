@@ -107,7 +107,6 @@ def select_operational_model(cached_profile):
     print(f"  [Enter] Reuse Last Verified Default ({last_model})")
     print("========================================================")
 
-    # 5-SECOND TIMEOUT APPLIED HERE
     choice = input_with_timeout("[?] Select engine target lane", "").strip()
 
     selected_model = model_matrix.get(choice, last_model)
@@ -133,13 +132,27 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, l
         test_line = ' '.join(current_line + [word])
         text_to_measure = test_line
         if is_rtl:
+            process_line = test_line
+            if lang_code in ['ckb', 'ku', 'kurdish']:
+                # 1. Pre-Reshape Setup
+                process_line = process_line.replace('ە', 'ة') # Ae -> Teh Marbuta
+                process_line = process_line.replace('ھ', 'ه') # Kurdish Heh -> Arabic Heh
+                process_line = process_line.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
+
             if custom_reshaper:
-                reshaped = custom_reshaper.reshape(test_line)
+                reshaped = custom_reshaper.reshape(process_line)
             else:
-                reshaped = arabic_reshaper.reshape(test_line)
+                reshaped = arabic_reshaper.reshape(process_line)
 
             if lang_code in ['ckb', 'ku', 'kurdish']:
-                reshaped = reshaped.replace('\uFE93', '\uFEE9').replace('\uFE94', '\uFEEA')
+                # 2. Post-Reshape Ligature Busters & Swaps
+                reshaped = reshaped.replace('\uFE93', '\uFEE9') # Isolated Teh Marbuta -> Isolated Heh
+                reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
+                reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
+
+                # Chop the Lam-Teh Marbuta ligatures in half to prevent Tofu boxes
+                reshaped = reshaped.replace('\uFEF5', '\uFEDD\uFEEA') # Lam Isolated + Final Heh
+                reshaped = reshaped.replace('\uFEF6', '\uFEDE\uFEEA') # Lam Medial + Final Heh
 
             text_to_measure = get_display(reshaped)
 
@@ -224,12 +237,10 @@ def render_channel_assets(session_dir=None):
     raw_path = raw_images[0]
 
     global_aoi = None
-    # 5-SECOND TIMEOUT APPLIED HERE
     aoi_choice = input_with_timeout("[?] Define manual AOI? (y/n)", "n")
     if aoi_choice.lower() in ['y', 'yes']:
         global_aoi = select_aoi_on_image(raw_path)
 
-    # 5-SECOND TIMEOUT APPLIED HERE
     blur_input = input_with_timeout("[?] Enter background blur radius", "30").strip()
     try:
         blur_radius = int(blur_input) if blur_input else 30
@@ -244,25 +255,14 @@ def render_channel_assets(session_dir=None):
         md_path = os.path.join(session_dir, f"{lang_code}.md")
         headline = extract_markdown_headline(md_path)
 
-        if headline and lang_code in ['ckb', 'ku', 'kurdish']:
-            headline = headline.replace('ە', 'ة')
-            headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
-
         layout = profile["image_layout"]
         placement = layout["raw_image_placement"]
 
         custom_reshaper = None
         if is_rtl:
-            reshaper_lang = 'Arabic'
-            if lang_code in ['ckb', 'ku', 'kurdish']:
-                reshaper_lang = 'Kurdish'
-            elif lang_code in ['fa', 'per', 'farsi']:
-                reshaper_lang = 'Farsi'
-            elif lang_code in ['ur', 'urdu']:
-                reshaper_lang = 'Urdu'
-
+            # FORCE ARABIC MODE TO ENSURE STABLE SHAPING
             reshaper_config = {
-                'language': reshaper_lang,
+                'language': 'Arabic',
                 'delete_harakat': False,
                 'support_ligatures': True
             }
@@ -312,10 +312,8 @@ def render_channel_assets(session_dir=None):
 
         canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
 
-        # --- BLURRED BACKGROUND IMPLEMENTATION ---
         bg_source = Image.open(raw_path).convert("RGBA")
         blurred_bg = ImageOps.fit(bg_source, (canvas_w, canvas_h), centering=(0.5, 0.5))
-        # Use the dynamic blur_radius defined by the user
         canvas = blurred_bg.filter(ImageFilter.GaussianBlur(radius=blur_radius))
 
         canvas.paste(snippet, (placement["x"], placement["y"]), snippet)
@@ -361,7 +359,6 @@ def render_channel_assets(session_dir=None):
                 print("    2. Ask Gemini to rewrite/shorten the headline")
                 print("    3. Type a manual override")
 
-                # 5-SECOND TIMEOUT APPLIED HERE
                 choice = input_with_timeout("Select an option (1/2/3)", "2").strip()
 
                 if choice == "1":
@@ -384,15 +381,11 @@ def render_channel_assets(session_dir=None):
                         print("    [X] Gemini API key missing. Choose another option.")
                         continue
 
-                    # The `select_operational_model` function uses our new input_with_timeout wrapper internally!
                     active_model = select_operational_model(cached_profile)
                     print(f"    [~] Asking Gemini to shorten...")
 
                     try:
                         headline = shorten_headline_with_gemini(headline, lang_code, cached_profile.get("gemini_api_key"), active_model)
-                        if lang_code in ['ckb', 'ku', 'kurdish']:
-                            headline = headline.replace('ە', 'ة')
-                            headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
                         print(f"    [+] Gemini proposed: {headline}")
                     except Exception as e:
                         print(f"\n    [X] SERVER ERROR: Google's API rejected the request.")
@@ -403,9 +396,6 @@ def render_channel_assets(session_dir=None):
 
                 elif choice == "3":
                     headline = input("    [?] Enter shorter headline: ").strip()
-                    if lang_code in ['ckb', 'ku', 'kurdish']:
-                        headline = headline.replace('ە', 'ة')
-                        headline = headline.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
                     font_size = base_font_size
 
             y_offset = max(0, (max_h - total_height) / 2)
@@ -414,13 +404,27 @@ def render_channel_assets(session_dir=None):
             for line in lines:
                 text_to_draw = line
                 if is_rtl:
+                    process_line = line
+                    if lang_code in ['ckb', 'ku', 'kurdish']:
+                        # 1. Pre-Reshape Setup
+                        process_line = process_line.replace('ە', 'ة') # Ae -> Teh Marbuta
+                        process_line = process_line.replace('ھ', 'ه') # Kurdish Heh -> Arabic Heh
+                        process_line = process_line.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
+
                     if custom_reshaper:
-                        reshaped = custom_reshaper.reshape(line)
+                        reshaped = custom_reshaper.reshape(process_line)
                     else:
-                        reshaped = arabic_reshaper.reshape(line)
+                        reshaped = arabic_reshaper.reshape(process_line)
 
                     if lang_code in ['ckb', 'ku', 'kurdish']:
-                        reshaped = reshaped.replace('\uFE93', '\uFEE9').replace('\uFE94', '\uFEEA')
+                        # 2. Post-Reshape Ligature Busters & Swaps
+                        reshaped = reshaped.replace('\uFE93', '\uFEE9') # Isolated Teh Marbuta -> Isolated Heh
+                        reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
+                        reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
+
+                        # Chop the Lam-Teh Marbuta ligatures in half to prevent Tofu boxes
+                        reshaped = reshaped.replace('\uFEF5', '\uFEDD\uFEEA') # Lam Isolated + Final Heh
+                        reshaped = reshaped.replace('\uFEF6', '\uFEDE\uFEEA') # Lam Medial + Final Heh
 
                     text_to_draw = get_display(reshaped)
 
@@ -435,7 +439,6 @@ def render_channel_assets(session_dir=None):
                 draw.text((line_start_x, current_y), text_to_draw, font=font, fill=color)
                 current_y += line_height
 
-        # --- HD EXPORT LOGIC ---
         final_hd_image = canvas.convert("RGB")
         out_path = os.path.join(session_dir, f"{channel_name}_broadcast.jpg")
         final_hd_image.save(out_path, "JPEG", quality=100, subsampling=0)

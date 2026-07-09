@@ -68,7 +68,7 @@ echo [?] Launch master orchestrator (main.py)?
 choice /C YN /T 3 /D Y /M "Auto-launching in 3 seconds. Press Y to start now, N to cancel"
 
 :: Check the exit code of the choice command
-:: ERRORLEVEL 2 means 'N' was pressed. ERRORLEVEL 1 means 'Y' was pressed or it timed out.
+:: ERRORLEVEL 2 means 'N' was pressed.
 if errorlevel 2 goto MANUAL_MODE
 goto LAUNCH_SCRIPT
 
@@ -81,7 +81,17 @@ echo --------------------------------------------------------
 python -B kernel\main.py
 echo --------------------------------------------------------
 echo [i] Script execution complete.
-pause
+echo --------------------------------------------------------
+echo.
+
+:: Prompt for relaunch
+choice /C YN /T 5 /D Y /M "Auto-relaunching in 5 seconds. Press Y to run again, N to exit"
+if errorlevel 2 goto END_SCRIPT
+goto LAUNCH_SCRIPT
+
+:END_SCRIPT
+echo.
+echo [i] Exiting launcher...
 exit /b
 
 :MANUAL_MODE

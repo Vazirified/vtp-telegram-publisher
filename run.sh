@@ -55,13 +55,30 @@ if [[ "$exec_choice" =~ ^[Nn]$ ]]; then
     # Drop the user into a bash shell with the venv still active
     exec bash
 else
-    echo ""
-    echo "--------------------------------------------------------"
-    echo "[->] Launching master pipeline..."
-    echo "--------------------------------------------------------"
-    # Added the -B flag as a secondary safeguard against __pycache__ folders
-    python3 -B kernel/main.py
-    echo "--------------------------------------------------------"
-    echo "[i] Script execution complete."
-    read -p "Press [Enter] to exit..."
+    # Continuous Execution Loop
+    while true; do
+        echo ""
+        echo "--------------------------------------------------------"
+        echo "[->] Launching master pipeline..."
+        echo "--------------------------------------------------------"
+        # Added the -B flag as a secondary safeguard against __pycache__ folders
+        python3 -B kernel/main.py
+        echo "--------------------------------------------------------"
+        echo "[i] Script execution complete."
+        echo "--------------------------------------------------------"
+        
+        # Prompt for relaunch
+        read -t 5 -n 1 -p "[?] Run orchestrator again? [Y/n] (Auto-relaunching in 5s): " relaunch_choice
+        echo ""
+        
+        if [ -z "$relaunch_choice" ]; then
+            relaunch_choice="Y"
+        fi
+        
+        if [[ "$relaunch_choice" =~ ^[Nn]$ ]]; then
+            echo ""
+            echo "[i] Exiting launcher..."
+            break
+        fi
+    done
 fi

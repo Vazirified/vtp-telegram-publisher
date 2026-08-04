@@ -174,13 +174,13 @@ def execute_text_pipeline(raw_payload: str) -> str:
     target_languages = extract_target_languages()
 
     system_instruction = (
-        f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations matching this target language array: {target_languages}.\n\n"
+        f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations or parsed text data matching this target language array: {target_languages}.\n\n"
         f"Parsing Layout Rules:\n"
         f"1. Isolate the text into its respective provided languages.\n"
         f"2. Within each language block, the very first line or first paragraph is ALWAYS the headline. Any text appearing after the first newline character sequence or empty line gap is the body.\n"
         f"3. If English ('en') text is missing from the input, generate it first by combining all available data in the input text to act as the primary master reference.\n"
-        f"4. For any target languages in the requested array that are missing from the input text, translate the English "
-        f"headline and body into that target language, strictly maintaining the structural split rule. If the translation is not missing from the input text, DO NOT change the existing present translation and use it as is.\n"
+        f"4. For any target languages in the requested array that IS missing from the isolated language blocks, translate the English "
+        f"headline and body into that target language, strictly maintaining the structural split rule. CRITICAL NOTE: If a language is not missing from the input text, DO NOT change the existing present translation provided and use it AS IS and without translation or edits in the returned output.\n"
         f"5. LANGUAGE SPECIAL RULE: For 'ckb' (Central Kurdish / Sorani), you MUST construct the native grammar and vocabulary using the standard Sorani Kurdo-Arabic alphabet (modified Perso-Arabic script). Characters from other languages are ABSOLUTELY FORBIDDEN. However, you ARE explicitly permitted to retain English (Latin) characters ONLY for untranslatable financial terminology, ticker symbols, proper nouns, or acronyms.\n"
         f"6. CRITICAL: The root of your output MUST be a JSON Object (dictionary), NOT a JSON Array (list). "
         f"The primary dictionary keys must be the lowercase language strings (e.g., 'en', 'fa', 'ckb').\n\n"

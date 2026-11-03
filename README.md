@@ -2,13 +2,23 @@
 
 Turns one news item (text plus a photo) into branded image posts with captions and publishes them to several Telegram channels in English, Persian, Arabic and Kurdish (Sorani).
 
+There are two ways to use it. Both do the same work, on the same files:
+
+- **Web interface** (recommended): runs in a browser on the same device, including the phone's own browser when VTP runs in Termux on Android. You pick the source messages straight from your Telegram chats, check and fix every step on one page, and watch the previews, your colleagues' reactions and the published posts without leaving it. See [Web interface](#web-interface).
+- **Terminal + window interface**: the original version, a Tkinter window followed by terminal prompts. See [Terminal interface](#terminal-interface).
+
 ## Contents
 
 - [How it works](#how-it-works)
 - [Setup](#setup)
 - [First run](#first-run)
 - [Web interface](#web-interface)
-- [Running the pipeline](#running-the-pipeline)
+  - [Starting it](#starting-it)
+  - [Publishing a post](#publishing-a-post)
+  - [The Telegram tab](#the-telegram-tab)
+  - [The Setup tab](#the-setup-tab)
+  - [Good to know](#good-to-know)
+- [Terminal interface](#terminal-interface)
 - [Configuration reference](#configuration-reference)
 - [Tools](#tools)
 - [Common tasks](#common-tasks)
@@ -16,22 +26,22 @@ Turns one news item (text plus a photo) into branded image posts with captions a
 
 ## How it works
 
-`kernel/main.py` runs four phases in order:
+Every post goes through four steps:
 
-1. **Ingestion** (Tkinter window): paste the source text or pick messages from your Telegram chats, then choose a local image or download one from a chat.
+1. **Source:** the news text (it may already contain some languages) and one photo, picked from your Telegram chats, pasted, or uploaded.
 2. **Text** (`text_engine.py`): Gemini splits and translates the text into every channel language. Existing human translations in the input are kept as-is.
 3. **Graphics** (`image_engine.py`): for each channel, the photo is placed on a blurred background, the channel template is overlaid, and the headline is drawn.
 4. **Publishing** (`publisher.py`): builds a caption for each channel, sends previews to the review channel, then posts to the live channels after you approve.
 
-Each run creates one session folder, `_workspace/session_<timestamp>_<slug>/`, containing:
+Each post is one session folder, `_workspace/session_<timestamp>_<slug>/`, containing:
 
 | File | Created by | Contents |
 |---|---|---|
 | `<lang>.md` | Text | `# Headline` on the first line, then the body |
-| `raw_image.<ext>` | Ingestion | Copy of the chosen photo |
+| `raw_image.<ext>` | Source | Copy of the chosen photo |
 | `<channel>_broadcast.jpg` | Graphics | Final image for each channel |
 | `<channel>_caption.txt` | Publishing | Final caption (HTML) for each channel |
-| `web_render.json`, `web_publish_log.json` | Web interface | Render settings and where previews/posts were sent (only for posts made or published in the browser) |
+| `web_render.json`, `web_publish_log.json` | Web interface | Render settings, and where previews and posts were sent (only for posts handled in the browser; the terminal interface ignores them) |
 
 ## Setup
 
@@ -43,13 +53,13 @@ Each run creates one session folder, `_workspace/session_<timestamp>_<slug>/`, c
 
 Each script creates `.venv` and installs the packages in `requirements.txt`.
 - `setup.bat` also installs Python 3.12 if none is found.
-- `setup-termux.sh` also installs the compilers, Tkinter and X11 pieces Termux needs. Start the Termux:X11 app before running the pipeline.
+- `setup-termux.sh` also installs the compilers Termux needs, plus Tkinter and X11 for the terminal interface. The web interface doesn't need X11.
 
 **FriBiDi** is needed for correct Kurdish headlines (Pillow's Raqm text layout):
 - Windows: bundled in `kernel/lib/`; nothing to install.
 - Linux and Termux: the setup scripts install it and report at the end whether Raqm is active.
 
-Without it the app still runs, but Kurdish ڵ ڕ ێ are drawn without their V mark, and a warning is printed when images are rendered.
+Without it the app still runs, but Kurdish ڵ ڕ ێ are drawn without their V mark, and a warning is printed when images are rendered. The web interface's Setup tab shows whether Raqm is active.
 
 ### Local files (not in git)
 
@@ -57,82 +67,127 @@ Without it the app still runs, but Kurdish ڵ ڕ ێ are drawn without their V ma
 
 | Path | What it is | How to get it |
 |---|---|---|
-| `_credentials/telegram_api.json` | `{"api_id": 1234567, "api_hash": "..."}` | Create an app at https://my.telegram.org |
+| `_credentials/telegram_api.json` | `{"api_id": 1234567, "api_hash": "..."}` | Create an app at https://my.telegram.org, then enter the values on the web interface's Setup tab (or create the file by hand) |
 | `_credentials/user_session.session` | Telethon login session | Created on first login (see [First run](#first-run)) |
-| `_credentials/gemini_keys.json` | Gemini API key and last used model | Created on first run when you paste your key |
+| `_credentials/gemini_keys.json` | Gemini API key and last used model | Created when you save your key (see [First run](#first-run)) |
 | `_config/channels.json` | Channel settings | Copy from an existing install, or create with the [configurator](#configurator) |
 | `_config/fonts/` | Fonts named in `channels.json` (Dana) | Copy from an existing install |
 | `_config/templates/` | One overlay PNG per channel | Copy from an existing install |
 
 ## First run
 
-1. **Log in to Telegram once from the terminal.** Telethon asks for your phone number, the login code Telegram sends you, and your 2FA password if you have one. Do this first with the emoji inspector, because a login prompt that appears during the GUI is hard to answer:
+**With the web interface** (easiest, also on a phone):
+1. Start it (see [Starting it](#starting-it)). The browser opens on the **Telegram** tab, which links to **Setup** while Telegram isn't connected.
+2. On **Setup**, enter the Telegram API ID and hash if they're asked for, then log in: phone number with country code, the login code Telegram sends you, and your two-step verification password if you have one.
+3. Paste your Gemini API key from Google AI Studio and tap **Save key**.
+
+**With the terminal:**
+1. **Log in to Telegram once.** Telethon asks for your phone number, the login code Telegram sends you, and your 2FA password if you have one. Do this first with the emoji inspector, because a login prompt that appears during the GUI is hard to answer:
    ```bash
    python kernel/inspect-emoji.py
    ```
    Activate `.venv` first: `.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on Linux/Termux. Enter `me` when it asks for a channel. The session is saved to `_credentials/user_session.session`.
 2. **Gemini API key.** The first time the text phase runs, it asks you to paste a key from Google AI Studio. It's saved to `_credentials/gemini_keys.json`.
 
-Alternatively, do both steps in the browser on the **Setup** page of the [web interface](#web-interface). It also asks for the Telegram API ID and hash when `_credentials/telegram_api.json` is missing.
+Both interfaces use the same login and key, so this is needed only once.
 
 ## Web interface
 
-A browser interface served from the same device. On Android it runs in the phone's own browser, without Termux:X11.
+### Starting it
 
 | Platform | Command |
 |---|---|
 | Windows | `run-web.bat` |
 | Linux / Termux | `bash run-web.sh` |
 
-- Starts a server at `http://127.0.0.1:8765/` and opens it in the default browser. Add `--port 9000` to use another port, or `--no-browser` to skip opening it.
-- Only this device can connect. The server listens on `127.0.0.1` and refuses requests addressed to any other host name.
-- Press Ctrl+C in the terminal to stop it.
-- The Telegram session can be used by only one program at a time. Close `run.bat`/`run.sh`, `publisher.py` and `inspect-emoji.py` while the web interface runs, and the other way round. If the Setup page reports `database is locked`, close the other program and click **Try again**.
+- It starts a server at `http://127.0.0.1:8765/` and opens it in the default browser (on Android, the phone's browser). Add `--port 9000` to use another port, or `--no-browser` to skip opening it.
+- Keep the terminal window open while you work; press Ctrl+C in it to stop the server.
+- On Termux, the launcher keeps Android from suspending the server while the screen is off.
 - If `.venv` was created before the web interface existed, the launcher installs the missing packages first.
 
-### Publishing a post in the browser
+The page has three tabs:
 
-1. **Pick the source.** In the **Telegram** tab, open the chat with the news and tap the messages with the text and the photo (an album counts as one). Select mode is on by default; a bar then shows what's selected, with **Clear** and **Start post**. To start without Telegram, use **Posts → New post** and paste the text.
-2. **New post page.** Check the text (it's the input for Gemini, like the ingestion window's text box). Tap the photo to use, or **Upload from this device** (opens the gallery or camera on a phone). Choose the Gemini model and tap **Translate and create post**. If the model fails, the error is shown and your text and photo stay; choose another model and try again.
-3. **Texts.** Each language's headline and body can be edited; changes are saved automatically.
-4. **Images.**
-   - Optionally drag a box on the photo to mark the area that must stay visible, like the terminal's manual AOI. The dark margin can be included to add space. **Clear area** goes back to center-cropping.
-   - Set the background blur, then **Render images**.
-   - Channels whose headline doesn't fit are marked **Headline too long**, with **Shrink font** and **Shorten with Gemini**. **Edit image headline** sets a different headline for that image only; **Undo image changes** goes back to the text's headline. The caption always keeps the full headline.
-   - If a text is edited after rendering, its images are marked **Text changed after rendering**; render again.
-5. **Captions.** One editor per channel with a preview of how Telegram shows it; saved automatically. When the text changed after a caption was made, **Rebuild from text** recreates it (discarding edits to that caption).
-6. **Publish.**
-   - No channel is ticked at first. Tick the channels and tap **Send previews**. They go to the review channel, a few seconds apart; each row shows its progress, then a **view** link.
-   - Once previews are sent, the review chat is shown live below the buttons: previews appear in it as they arrive, with your colleagues' reactions and **Who reacted**. A preview's **view** link scrolls to it there.
-   - **Publish to live channels** asks for confirmation, then posts to each ticked channel's `chat_id`. Afterwards, the previews of the channels that were published are **deleted from the review channel** (every preview VTP sent for them, nothing else). If Telegram refuses (e.g. no right to delete messages in a review *channel*), the page says so and the posts stay published.
-   - **Published posts** appear as cards, one per channel, showing each post as it looks in its channel. Reactions update live and views every minute; **↗** opens the post in the Telegram tab. The review chat stays below the cards while any previews remain, and disappears once all are published.
+| Tab | For |
+|---|---|
+| **Telegram** | Your chats, live: read messages, see reactions and who reacted, react, and select messages to start a post |
+| **Posts** | All posts, newest first, and each post's steps: texts, images, captions, publishing |
+| **Setup** | Telegram login, Gemini key, and checks for `channels.json` and Raqm |
 
-All posts are listed under **Posts**, newest first; open one to continue or resend it. A post is the same session folder the terminal pipeline uses, so images and captions are identical. The web interface also keeps `web_render.json` (area, blur, image-only headlines) and `web_publish_log.json` (where previews and posts were sent) in the folder; the terminal pipeline ignores them.
+A green dot at the top right means Telegram is connected.
 
-### Pages
+### Publishing a post
 
-- **Posts:** the post list, a new post, and each post's steps (above).
-- **Telegram:** a viewer for your chats. The only thing it changes on Telegram is your reactions (below).
-  - **Shortcuts** lists the review channel and every channel in `channels.json`; **Chats** lists all your chats, with **Load more** for older ones.
-  - Chats show their profile pictures; chats without one show coloured initials.
-  - Messages show photos, albums, formatting and views. New, edited and deleted messages update live.
-  - **Reactions** appear under each message with their counts; your own reaction is outlined.
-    - In groups and private chats, the names of the people who reacted are shown. Reactions you haven't seen yet are in bold, and **Who reacted** loads the full list. In channels, Telegram keeps reactions anonymous, so only counts are shown.
-    - Reactions update live, also on older messages.
-    - A red ♥ badge in the chat list marks chats with reactions to your messages that you haven't seen yet.
-  - **Reacting:** tap **☺+** under a message to open the picker: your recent reactions (the same list the Telegram apps use), and **More** for all of them. Tapping a reaction chip under a message reacts with it; tapping your own (outlined) one removes it. A message gets one reaction from you; choosing another replaces it. The picker only offers what the chat allows ("Reactions are turned off" when none), and custom emoji only with Telegram Premium. Works the same in the review chat and the published-post cards on a post page.
-  - Reading here doesn't mark messages or reactions as read.
-  - **Select** mode is on by default: tapping a message selects it as the source of a new post (see above), and buttons such as **Who reacted** still work. Tap **Select ✓** to turn it off, so photos open full size and links can be followed; it stays off until the page is reloaded.
-- **Setup:** Telegram API ID and hash, Telegram login (phone, code, 2FA password), the Gemini API key, and checks for `channels.json` and Raqm.
+**1. Pick the source in the Telegram tab.**
+Open the chat with the news and tap the messages with the text and the photo. An album counts as one message. Select mode is on by default, so a tap selects instead of opening links or photos. A bar shows what's selected, with **Clear** and **Start post**.
 
-Images shown in the viewer (photos, profile pictures, custom emoji) are cached in `_workspace/web_cache/`, and photos chosen for a new post in `_workspace/web_uploads/`. Both are deleted after 7 days; a post keeps its own copy of its photo.
+To start without Telegram, open **Posts → New post** and paste the text instead.
 
-## Running the pipeline
+**2. New post page.**
+- **Text:** check it and edit if needed; it's what Gemini receives. The selected messages are joined in chat order. Languages already in the text are kept as they are; missing ones are translated.
+- **Photo:** tap the photo to use (photos from the selected messages are offered), or **Upload from this device**, which opens the gallery or camera on a phone.
+- **Translate:** choose the Gemini model and tap **Translate and create post**. It can take up to a minute. If the model fails or is overloaded, the error is shown and your text and photo stay: choose another model and try again.
+
+The post page then opens. Its four sections can be revisited in any order; changes are saved automatically.
+
+**3. Texts.** Each language's headline and body, with English first. The headline is drawn on the images; the captions are made from the headline and the body.
+
+**4. Images.**
+- Optionally drag a box on the photo to mark the area that must stay visible. The dark grid around the photo can be included to add space around it. If the area covers most of the photo, it's fitted whole; otherwise the photo is cropped around it. **Clear area** goes back to center-cropping.
+- Set the **background blur** with the slider and tap **Render images**. Every channel's image appears in a grid; tap one to open it full size.
+- A channel whose headline doesn't fit is marked **Headline too long**, with two fixes:
+  - **Shrink font** lowers the font size 2 px at a time until it fits, down to about 18 px.
+  - **Shorten with Gemini** asks for a shorter headline.
+- **Edit image headline** sets a different headline for one image only; **Undo image changes** goes back to the text's headline. Captions always keep the full headline.
+- When a text is edited after rendering, its images are marked **Text changed after rendering**; render again.
+
+**5. Captions.** One editor per channel with a preview of how Telegram will show it. Captions are Telegram HTML: `<b>`, `<i>`, `<a href="...">` and `<tg-emoji>` tags work. When a text changed after its caption was made, the caption is marked, and **Rebuild from text** recreates it (discarding your edits to that caption).
+
+**6. Publish.**
+1. Tick the channels to send; none are ticked at first.
+2. Tap **Send previews**. The posts go to the review channel (`catch_all_channel`), a few seconds apart to stay within Telegram's limits. Each row shows its progress, then a **view** link.
+3. The review chat then appears below the buttons, live: the previews arrive in it, with your colleagues' reactions and who reacted. A preview's **view** link scrolls to it.
+4. Tap **Publish to live channels** and confirm. Each ticked channel gets its post at its `chat_id`, again a few seconds apart.
+5. After publishing, the previews of the channels that were published are **deleted from the review channel**: every preview VTP sent for them, and nothing else. If Telegram refuses (for example, no right to delete messages in a review *channel*), a message says so and the posts stay published.
+6. **Published posts** appear as cards, one per channel, each showing the post as it looks in its channel. Reactions update live and views every minute; **↗** opens the post in the Telegram tab. While some previews remain, the review chat stays below the cards; it disappears once everything is published.
+
+You can leave a post at any step and come back later from **Posts**, for example to fix a caption and send its preview again.
+
+### The Telegram tab
+
+- **Shortcuts** at the top: the review channel and every channel in `channels.json`. A channel ID that can't be found is listed with the reason. **Chats** below lists all your chats, with **Load more** for older ones.
+- Chats show their profile pictures, unread counts, and a red **♥** badge when there are reactions to your messages that you haven't seen yet.
+- Messages show photos, albums, formatting, views and reactions. New, edited and deleted messages, and reaction changes, appear live.
+- **Reactions:**
+  - Each reaction shows its count; your own is outlined.
+  - In groups and private chats, the names of the people who reacted are shown, with reactions you haven't seen yet in bold. **Who reacted** loads the full list. In channels, Telegram keeps reactions anonymous, so only counts are shown.
+- **Reacting:**
+  - Tap **☺+** under a message for the picker: your recent reactions (the same list the Telegram apps show), and **More** for all of them.
+  - Tapping a reaction under a message reacts with it; tapping your own removes it. A message gets one reaction from you; choosing another replaces it.
+  - The picker only offers what the chat allows, and custom emoji only with Telegram Premium. Reacting works the same in the review chat and the published-post cards on a post page.
+- **Select mode** is on by default: tapping a message selects it for a new post, while buttons such as **☺+** and **Who reacted** still work. Tap **Select ✓** in the chat header to turn it off, so photos open full size and links can be followed; it stays off until the page is reloaded.
+- Reading here doesn't mark messages or reactions as read. Your reactions are the only thing this tab changes on Telegram.
+
+### The Setup tab
+
+- **Telegram:** API ID and hash (when `_credentials/telegram_api.json` is missing), login with phone, code and two-step verification password, and the account you're logged in as. To switch accounts, stop the server and delete `_credentials/user_session.session`.
+- **Gemini:** whether a key is saved and the last used model; paste a new key to replace it.
+- **Rendering and channels:** how many channels `channels.json` has, and whether Raqm is active.
+
+### Good to know
+
+- **One program at a time.** The Telegram session can be used by only one program at once. Close `run.bat`/`run.sh`, `publisher.py` and `inspect-emoji.py` while the web interface runs, and the other way round. If Setup reports `database is locked`, close the other program and tap **Try again**.
+- **Only this device can connect.** The server listens on `127.0.0.1` and refuses requests addressed to any other host name or sent from other websites.
+- **Same files as the terminal.** A post is an ordinary session folder, so the terminal tools work on it too, and images and captions are identical whichever interface made them.
+- **Cache.** Images shown in the browser (photos, profile pictures, custom emoji) are cached in `_workspace/web_cache/`, and photos chosen for a new post in `_workspace/web_uploads/`. Both are deleted after 7 days; a post keeps its own copy of its photo.
+
+## Terminal interface
 
 | Platform | Command |
 |---|---|
 | Windows | `run.bat` |
-| Linux / Termux | `bash run.sh` |
+| Linux / Termux | `bash run.sh` (on Termux, start the Termux:X11 app first) |
+
+`kernel/main.py` runs the four steps in order: an ingestion window, then terminal prompts for the text, graphics and publishing phases.
 
 **Launcher behavior:**
 - If `.venv` is missing, it offers to run setup first.
@@ -194,6 +249,8 @@ Click **Start Processing Pipeline** when both are set. Closing the window cancel
    - `R` **Retry:** reloads the images and captions from disk and sends the previews again. Edit a caption file or re-render an image first, then press `R`.
    - `S` **Stall:** exits without posting anything live.
 
+   The terminal interface doesn't delete previews after publishing; the web interface does.
+
 ## Configuration reference
 
 ### `_config/channels.json`
@@ -228,7 +285,7 @@ Click **Start Processing Pipeline** when both are set. Closing the window cancel
 
 | Key | Meaning |
 |---|---|
-| `catch_all_channel` | Where previews go: `me` (Saved Messages), `@username`, or a numeric ID. Empty means no previews; the review menu still appears. |
+| `catch_all_channel` | Where previews go: `me` (Saved Messages), `@username`, or a numeric ID. Empty means no previews; the review menu still appears in the terminal. For the web interface's automatic preview deletion, use a chat where your account may delete its own messages (Saved Messages, a group, or a channel where you're an admin with delete rights). |
 | `chat_id` | The live channel: `@username` or a numeric ID such as `-1001234567890`. Numeric strings are converted to numbers automatically. |
 | `language` | `en`, `fa`, `ar` or `ckb`. It selects `<lang>.md` and the language Gemini translates into. Channels can share a language. |
 | `is_rtl` | `true` for Persian, Arabic and Kurdish. Turns on right-to-left shaping. |
@@ -238,14 +295,14 @@ Click **Start Processing Pipeline** when both are set. Closing the window cancel
 | `headline_safe_area` | The box the headline must fit in: `x_start`, `y_start`, `width`, `max_height`. The text is centered vertically inside it. |
 | `font_path`, `font_size`, `font_color` | Headline font, relative to the project root. The size is the starting size before any shrinking. |
 | `alignment` | `left`, `center` or `right`. Defaults to `right` for RTL and `left` otherwise. |
-| `line_spacing`, `max_lines` | Line height multiplier, and the most lines allowed before the overflow menu appears. |
+| `line_spacing`, `max_lines` | Line height multiplier, and the most lines allowed before a headline counts as too long. |
 | `header_template`, `footer_template` | Caption HTML placed before the headline and after the body. Write `\n` for a line break. Telegram HTML tags work, including custom emoji (see [Emoji inspector](#emoji-inspector)). |
 
 Older files may also contain `resize_mode` and `font_weight`. Nothing reads them: the photo is always cover-fitted, and the font weight comes from the font file you pick (e.g. `Dana-Bold.ttf`). The configurator drops them when you edit a channel.
 
 ## Tools
 
-Run these with `.venv` active, from the project root.
+Run these with `.venv` active, from the project root. Like the terminal interface, they can't run while the web interface is running (shared Telegram session).
 
 ### Configurator
 
@@ -286,7 +343,7 @@ A template or font must be an existing file. To add a new one, copy it into `_co
 python kernel/inspect-emoji.py
 ```
 
-Logs in to Telegram (this is also the easiest way to do the first login) and asks for a chat: `@username`, or `me` for Saved Messages. For each of the last 10 text messages it prints:
+Logs in to Telegram and asks for a chat: `@username`, or `me` for Saved Messages. For each of the last 10 text messages it prints:
 - the text as Markdown and as HTML, with formatting and custom emoji as tags;
 - any reactions, with custom emoji IDs and ready-to-paste tags such as `<tg-emoji emoji-id="1234567890123456789">🌐</tg-emoji>`.
 
@@ -309,35 +366,44 @@ Each of these works on the **latest** session folder:
 ## Common tasks
 
 **Fix a translation:**
-1. Edit `<lang>.md` in the session folder.
-2. Run `python kernel/image_engine.py` if the headline changed.
-3. Delete that language's `*_caption.txt` files so they're rebuilt from the `.md`, or edit them directly.
-4. Run `python kernel/publisher.py`.
+- *Web:* edit the text on the post page, **Render images again**, then **Rebuild from text** on the captions marked as changed.
+- *Terminal:*
+  1. Edit `<lang>.md` in the session folder.
+  2. Run `python kernel/image_engine.py` if the headline changed.
+  3. Delete that language's `*_caption.txt` files so they're rebuilt from the `.md`, or edit them directly.
+  4. Run `python kernel/publisher.py`.
 
-**Change one caption only:** edit `<channel>_caption.txt`, then press `R` in the review menu.
+**Change one caption only:**
+- *Web:* edit it in the Captions section, then **Send previews** for that channel.
+- *Terminal:* edit `<channel>_caption.txt`, then press `R` in the review menu.
 
-**Fix a headline that renders badly:** edit the first line of `<lang>.md`, then re-render with `python kernel/image_engine.py`.
+**Fix a headline that renders badly:**
+- *Web:* **Edit image headline** on that channel's image, or edit the headline in Texts and render again.
+- *Terminal:* edit the first line of `<lang>.md`, then re-render with `python kernel/image_engine.py`.
 
-**Test without posting live:** keep `catch_all_channel` set to `me` and answer `S` at the review menu.
+**Test without posting live:**
+- *Web:* send previews only, and don't tap **Publish to live channels**.
+- *Terminal:* keep `catch_all_channel` set to `me` and answer `S` at the review menu.
 
 ## Project layout
 
 ```
 kernel/
-  main.py           Orchestrator and ingestion window
-  text_engine.py    Gemini translation -> <lang>.md
-  image_engine.py   Image rendering and headline layout
-  publisher.py      Captions, previews, review, live posting
-  auth_manager.py   Telegram client from _credentials/
-  common.py         Shared paths, config loading, Gemini helpers
-  configurator.py   Channel settings editor
-  inspect-emoji.py  Message/emoji inspector
-  webapp.py         Web interface server (FastAPI)
-  telegram_service.py  Telegram login, viewer data and live updates for the web interface
-  pipeline_service.py  Posts (session folders) for the web interface, using the engines above
-  web/              Web interface page (HTML, CSS, JavaScript; posts.js for the pipeline pages)
-  lib/              FriBiDi for Windows (see lib/README.txt)
-requirements.txt    Python packages
-setup.*, run.*      Setup and launch scripts per platform
-run-web.*           Web interface launchers
+  main.py              Terminal interface: orchestrator and ingestion window
+  text_engine.py       Gemini translation -> <lang>.md
+  image_engine.py      Image rendering and headline layout
+  publisher.py         Captions, previews, review, live posting
+  auth_manager.py      Telegram client from _credentials/
+  common.py            Shared paths, config loading, Gemini helpers
+  configurator.py      Channel settings editor
+  inspect-emoji.py     Message/emoji inspector
+  webapp.py            Web interface server (FastAPI)
+  telegram_service.py  Web interface: Telegram login, chats, reactions, live updates
+  pipeline_service.py  Web interface: posts (session folders), using the engines above
+  web/                 Web interface page: app.js (Telegram tab, Setup), posts.js (Posts tab)
+  lib/                 FriBiDi for Windows (see lib/README.txt)
+requirements.txt       Python packages
+setup.*                Setup scripts per platform
+run-web.*              Web interface launchers
+run.*                  Terminal interface launchers
 ```

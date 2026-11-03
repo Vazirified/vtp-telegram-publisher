@@ -7,6 +7,10 @@ _config/
 # Per-run output (downloaded media, session folders)
 _workspace/
 
+# Notes for Claude sessions (project guidance and handover)
+CLAUDE.md
+HANDOVER.md
+
 # Local Python environment
 .venv/
 __pycache__/

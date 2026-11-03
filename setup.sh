@@ -69,9 +69,9 @@ source .venv/bin/activate
 echo "[~] Upgrading pip to the latest version..."
 pip install --upgrade pip
 
-# Step 5: Inline Dependency Installation (No requirements.txt needed!)
+# Step 5: Install the Python dependencies
 echo "[~] Installing required pipeline engines..."
-pip install telethon pillow arabic-reshaper python-bidi google-genai
+pip install -r requirements.txt
 
 # Step 6: Confirm Pillow can actually use Raqm (i.e. it found FriBiDi)
 echo "[~] Verifying Raqm text layout for Kurdish/Persian/Arabic headlines..."

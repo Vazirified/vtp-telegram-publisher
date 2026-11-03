@@ -50,7 +50,7 @@ cd ~/vtp---vazirified-telegram-publisher
 
 # 8. Pull remaining lightweight components
 echo "[~] Syncing pipeline modules (Telethon/Pillow/Bidi)..."
-pip install telethon pillow arabic-reshaper python-bidi google-genai
+pip install -r requirements.txt
 
 # 9. Confirm Pillow can use Raqm; if not, rebuild Pillow with its bundled Raqm
 raqm_active() {

@@ -100,10 +100,10 @@ call .venv\Scripts\activate
 echo [--^>^] Upgrading environment core managers...
 python -m pip install --upgrade pip setuptools wheel
 
-:: Step 7: Batch install pipeline requirements (Upgraded to Modern GenAI SDK)
+:: Step 7: Batch install pipeline requirements from requirements.txt
 echo [--^>^] Syncing workspace dependencies with remote mirrors...
 echo --------------------------------------------------------
-pip install requests telethon arabic-reshaper python-bidi Pillow textual google-genai
+pip install -r requirements.txt
 echo --------------------------------------------------------
 
 if errorlevel 1 (

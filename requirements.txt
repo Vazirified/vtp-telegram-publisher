@@ -1,0 +1,6 @@
+# Python packages used by kernel/. Installed by setup.bat, setup.sh and setup-termux.sh.
+telethon>=1.44           # Telegram client (fetching chats/media, publishing)
+pillow>=12.2             # Image rendering; Raqm text layout for RTL headlines
+arabic-reshaper>=3.0     # Fallback RTL shaping when Raqm is unavailable
+python-bidi>=0.6         # Fallback RTL reordering when Raqm is unavailable
+google-genai>=2.10       # Gemini translation and headline shortening

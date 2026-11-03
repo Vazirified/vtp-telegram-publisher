@@ -25,6 +25,41 @@ def parse_target(target):
             return int(target)
     return target
 
+def build_caption(md_path, profile):
+    """Stitches the channel's header, the bold headline, the body and the footer into caption HTML."""
+    with open(md_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    headline = lines[0].lstrip("#").strip() if lines else ""
+    body = "".join(lines[1:]).strip()
+
+    # Parse headers/footers and fix JSON escaped newlines
+    captions_cfg = profile.get("caption_settings", {})
+    header = captions_cfg.get("header_template", "").replace("\\n", "\n").strip()
+    footer = captions_cfg.get("footer_template", "").replace("\\n", "\n").strip()
+
+    # The header and the headline share the first line
+    head_block = ""
+    if header:
+        head_block += header
+    if headline:
+        if head_block:
+            head_block += " " # Add a single space separation if header exists
+        head_block += f"<b>{headline}</b>"
+
+    # Compile final layout blocks
+    final_text = []
+    if head_block: final_text.append(head_block)
+    if body: final_text.append(body)
+    if footer: final_text.append(footer)
+
+    compiled_caption = "\n\n".join(final_text)
+
+    # Whitespace inside <tg-emoji> tags shifts Telethon's entity offsets
+    compiled_caption = re.sub(r'(<tg-emoji[^>]*>)\s+', r'\1', compiled_caption)
+    compiled_caption = re.sub(r'\s+(</tg-emoji>)', r'\1', compiled_caption)
+    return compiled_caption
+
 def generate_all_caption_files(session_dir, config):
     """
     Stitches header, headline, body, and footer for EVERY channel defined in config.
@@ -47,38 +82,7 @@ def generate_all_caption_files(session_dir, config):
             print(f"  [!] Missing source markdown for {channel_internal_name} ({lang}.md). Caption not generated.")
             continue
 
-        # Read Markdown source
-        with open(md_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-
-        headline = lines[0].lstrip("#").strip() if lines else ""
-        body = "".join(lines[1:]).strip()
-
-        # Parse headers/footers and fix JSON escaped newlines
-        captions_cfg = profile.get("caption_settings", {})
-        header = captions_cfg.get("header_template", "").replace("\\n", "\n").strip()
-        footer = captions_cfg.get("footer_template", "").replace("\\n", "\n").strip()
-
-        # --- BUG FIX 1: Merge Header and Headline cleanly onto the same line ---
-        head_block = ""
-        if header:
-            head_block += header
-        if headline:
-            if head_block:
-                head_block += " " # Add a single space separation if header exists
-            head_block += f"<b>{headline}</b>"
-
-        # Compile final layout blocks
-        final_text = []
-        if head_block: final_text.append(head_block)
-        if body: final_text.append(body)
-        if footer: final_text.append(footer)
-
-        compiled_caption = "\n\n".join(final_text)
-
-        # --- BUG FIX 2: Telethon Entity Offset Stripper ---
-        compiled_caption = re.sub(r'(<tg-emoji[^>]*>)\s+', r'\1', compiled_caption)
-        compiled_caption = re.sub(r'\s+(</tg-emoji>)', r'\1', compiled_caption)
+        compiled_caption = build_caption(md_path, profile)
 
         # Save to session directory
         with open(txt_path, "w", encoding="utf-8") as f:
@@ -112,32 +116,80 @@ def select_channels_ui(channels_dict):
         return []
 
 async def compile_and_send_post(client, target_peer, session_dir, channel_internal_name, log_prefix=""):
-    """Reloads the LATEST image and text from disk and sends them via Telethon."""
-    # Updated to look for the new HD .jpg file instead of .png
+    """Reloads the LATEST image and text from disk and sends them via Telethon.
+
+    Returns the sent message, or None if a file is missing or sending failed.
+    """
     img_path = os.path.join(session_dir, f"{channel_internal_name}_broadcast.jpg")
     txt_path = os.path.join(session_dir, f"{channel_internal_name}_caption.txt")
 
     if not os.path.exists(img_path):
         print(f"{log_prefix} [X] Skipping {channel_internal_name}: Image file not found at {img_path}")
-        return False
+        return None
     if not os.path.exists(txt_path):
         print(f"{log_prefix} [X] Skipping {channel_internal_name}: Caption file not found at {txt_path}")
-        return False
+        return None
 
     with open(txt_path, "r", encoding="utf-8") as f:
         caption_text = f.read()
 
     try:
-        await client.send_file(
+        return await client.send_file(
             target_peer,
             file=img_path,
             caption=caption_text,
             parse_mode="html"
         )
-        return True
     except Exception as e:
         print(f"{log_prefix} [ERROR] Failed to send post for {channel_internal_name}: {e}")
-        return False
+        return None
+
+async def warm_up_entity_cache(client):
+    """Loads recent dialogs so Telethon can resolve numeric IDs of private groups and channels."""
+    print("\n[~] Warming up Telethon entity cache (syncing with Telegram)...")
+    try:
+        await client.get_dialogs(limit=50)
+        print("  [+] Cache synced.")
+    except Exception:
+        print("  [!] Cache sync skipped (Non-fatal).")
+
+async def send_previews(client, catch_all_gate, session_dir, channel_names):
+    """Sends each channel's post to the review channel. Returns {channel: sent message or None}."""
+    print(f"\n[~] Dispatching previews to Catch-All Gate ({catch_all_gate})...")
+    sent = {}
+    for ch_name in channel_names:
+        print(f"  -> Sending preview for {ch_name}...")
+        sent[ch_name] = await compile_and_send_post(client, catch_all_gate, session_dir, ch_name)
+        await asyncio.sleep(random.uniform(3.0, 8.0))
+    return sent
+
+async def publish_live(client, channels_dict, session_dir, channel_names):
+    """Posts each channel's post to its live chat_id. Returns {channel: sent message or None}."""
+    print("\n========================================================")
+    print("  INITIATING LIVE BROADCAST")
+    print("========================================================")
+
+    sent = {}
+    for ch_name in channel_names:
+        # Safely parse the Live Chat ID
+        raw_chat_id = channels_dict[ch_name].get("chat_id")
+        live_chat_id = parse_target(raw_chat_id)
+
+        if not live_chat_id:
+            print(f"  [X] Skipping {ch_name}: No chat_id defined in config.")
+            sent[ch_name] = None
+            continue
+
+        print(f"  -> Final re-creation and publishing to {ch_name} ({live_chat_id})...")
+        sent[ch_name] = await compile_and_send_post(client, live_chat_id, session_dir, ch_name, log_prefix="  ->")
+
+        if sent[ch_name]:
+            print(f"  [+] Successfully published to {ch_name}.")
+
+        await asyncio.sleep(random.uniform(5.0, 10.0))
+
+    print("\n[SUCCESS] Live broadcast complete.")
+    return sent
 
 async def main(session_dir=None):
     """Publishes the given session, or the latest one when run on its own."""
@@ -173,23 +225,11 @@ async def main(session_dir=None):
     final_approval_granted = False
 
     async with client:
-        # --- CACHE WARMUP ---
-        # Forces Telethon to sync its local DB with Telegram so it recognizes hidden group IDs
-        print("\n[~] Warming up Telethon entity cache (syncing with Telegram)...")
-        try:
-            await client.get_dialogs(limit=50)
-            print("  [+] Cache synced.")
-        except Exception:
-            print("  [!] Cache sync skipped (Non-fatal).")
+        await warm_up_entity_cache(client)
 
         while True:
             if catch_all_gate:
-                print(f"\n[~] Dispatching previews to Catch-All Gate ({catch_all_gate})...")
-
-                for ch_name in selected_ch_names:
-                    print(f"  -> Sending preview for {ch_name}...")
-                    await compile_and_send_post(client, catch_all_gate, session_dir, ch_name)
-                    await asyncio.sleep(random.uniform(3.0, 8.0))
+                await send_previews(client, catch_all_gate, session_dir, selected_ch_names)
 
             print("\n========================================================")
             print("  REVIEW & APPROVAL")
@@ -217,28 +257,7 @@ async def main(session_dir=None):
                 print("[!] Invalid option. Please enter A, R, or S.")
 
         if final_approval_granted:
-            print("\n========================================================")
-            print("  INITIATING LIVE BROADCAST")
-            print("========================================================")
-
-            for ch_name in selected_ch_names:
-                # Safely parse the Live Chat ID
-                raw_chat_id = channels_dict[ch_name].get("chat_id")
-                live_chat_id = parse_target(raw_chat_id)
-
-                if not live_chat_id:
-                    print(f"  [X] Skipping {ch_name}: No chat_id defined in config.")
-                    continue
-
-                print(f"  -> Final re-creation and publishing to {ch_name} ({live_chat_id})...")
-                success = await compile_and_send_post(client, live_chat_id, session_dir, ch_name, log_prefix="  ->")
-
-                if success:
-                    print(f"  [+] Successfully published to {ch_name}.")
-
-                await asyncio.sleep(random.uniform(5.0, 10.0))
-
-            print("\n[SUCCESS] Live broadcast complete.")
+            await publish_live(client, channels_dict, session_dir, selected_ch_names)
 
     print("\nPublishing pipeline complete.")
 

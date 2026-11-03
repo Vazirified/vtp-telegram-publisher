@@ -82,6 +82,24 @@ def save_gemini_credentials(api_key, model_name):
     with open(GEMINI_KEYS_FILE, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
+def list_gemini_models(api_token):
+    """Returns the sorted names of Gemini models that can generate text. Raises on API errors."""
+    from google import genai
+    client = genai.Client(api_key=api_token)
+    live_models = []
+
+    for model_meta in client.models.list():
+        if "gemini" in model_meta.name.lower():
+            if any(bad_tag in model_meta.name.lower() for bad_tag in ["embedding", "vision", "live", "audio", "search"]):
+                continue
+            if "generateContent" in model_meta.supported_actions:
+                clean_name = model_meta.name.split("/")[-1]
+                if clean_name not in live_models:
+                    live_models.append(clean_name)
+
+    live_models.sort()
+    return live_models
+
 def select_operational_model(cached_profile):
     """Lists live Gemini models, lets the user pick one, and caches the choice."""
     last_model = cached_profile.get("last_used_model", DEFAULT_GEMINI_MODEL)
@@ -92,21 +110,7 @@ def select_operational_model(cached_profile):
 
     print("\n[~] Querying Google API Gateway for live intelligence clusters...")
     try:
-        from google import genai
-        client = genai.Client(api_key=api_token)
-        live_models = []
-
-        for model_meta in client.models.list():
-            if "gemini" in model_meta.name.lower():
-                if any(bad_tag in model_meta.name.lower() for bad_tag in ["embedding", "vision", "live", "audio", "search"]):
-                    continue
-                if "generateContent" in model_meta.supported_actions:
-                    clean_name = model_meta.name.split("/")[-1]
-                    if clean_name not in live_models:
-                        live_models.append(clean_name)
-
-        live_models.sort()
-
+        live_models = list_gemini_models(api_token)
     except Exception as e:
         print(f"[!] Warning: Unable to poll live registry ({e}). Defaulting to offline profile.")
         return last_model

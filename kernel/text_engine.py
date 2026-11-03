@@ -49,20 +49,9 @@ def extract_target_languages():
     except Exception:
         return ["en"]
 
-def execute_text_pipeline(raw_payload: str) -> str:
-    """Sanitizes inputs, runs dynamic translation matrices, and slugifies output directories."""
-    clean_text = sanitize_clipboard_text(raw_payload)
-    if not clean_text:
-        print("[ERROR] Input text payload resolved to empty string after serialization pass.")
-        return None
-
-    cached_profile = load_gemini_credentials()
-    api_token = get_gemini_api_token(cached_profile)
-
-    cached_profile["gemini_api_key"] = api_token
-    target_languages = extract_target_languages()
-
-    system_instruction = (
+def build_system_instruction(target_languages):
+    """Returns Gemini's instructions for splitting the input and translating it into target_languages."""
+    return (
         f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations or parsed text data matching this target language array: {target_languages}.\n\n"
         f"Parsing Layout Rules:\n"
         f"1. Isolate the text into its respective provided languages.\n"
@@ -82,57 +71,49 @@ def execute_text_pipeline(raw_payload: str) -> str:
         f"}}"
     )
 
+def request_translation(clean_text, api_token, active_model):
+    """Asks Gemini to split and translate the text into every channel language.
+
+    Returns {lang: {"headline": ..., "body": ...}}. Raises on API errors or invalid JSON.
+    """
+    system_instruction = build_system_instruction(extract_target_languages())
     prompt = f"Process the following source content text:\n\n{clean_text}"
-    parsed_payload = None
 
-    # --- RETRY LOOP INJECTED HERE ---
-    while True:
-        active_model = select_operational_model(cached_profile)
-        # Persists a freshly pasted key even when the model list could not be fetched
-        save_gemini_credentials(api_token, active_model)
+    # Initialize the GenAI Client with a strict 30-second network timeout guard
+    client = genai.Client(
+        api_key=api_token,
+        http_options=types.HttpOptions(timeout=30 * 1000) # Value in milliseconds
+    )
 
-        # Initialize the GenAI Client with a strict 30-second network timeout guard
-        client = genai.Client(
-            api_key=api_token,
-            http_options=types.HttpOptions(timeout=30 * 1000) # Value in milliseconds
+    print(f"[~] Connecting to Unified Gateway via cluster route '{active_model}'...")
+    response = client.models.generate_content(
+        model=active_model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json"
         )
+    )
+    parsed_payload = json.loads(response.text)
 
-        print(f"[~] Connecting to Unified Gateway via cluster route '{active_model}'...")
-        try:
-            response = client.models.generate_content(
-                model=active_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json"
-                )
-            )
-            parsed_payload = json.loads(response.text)
+    # Gemini sometimes returns a list of language blocks instead of a dictionary
+    if isinstance(parsed_payload, list):
+        normalized_dict = {}
+        for block in parsed_payload:
+            if isinstance(block, dict):
+                if "language" in block:
+                    lang_key = str(block["language"]).lower()
+                    normalized_dict[lang_key] = {"headline": block.get("headline", ""), "body": block.get("body", "")}
+                else:
+                    for k, v in block.items():
+                        if isinstance(v, dict) and ("headline" in v or "body" in v):
+                            normalized_dict[k.lower()] = v
+        parsed_payload = normalized_dict
 
-            # Structural defensive layout safety handler
-            if isinstance(parsed_payload, list):
-                normalized_dict = {}
-                for block in parsed_payload:
-                    if isinstance(block, dict):
-                        if "language" in block:
-                            lang_key = str(block["language"]).lower()
-                            normalized_dict[lang_key] = {"headline": block.get("headline", ""), "body": block.get("body", "")}
-                        else:
-                            for k, v in block.items():
-                                if isinstance(v, dict) and ("headline" in v or "body" in v):
-                                    normalized_dict[k.lower()] = v
-                parsed_payload = normalized_dict
+    return parsed_payload
 
-            # If everything succeeded without throwing an Exception, break the loop and continue
-            break
-
-        except Exception as e:
-            print(f"\n[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
-            print("[!] The selected model is likely overloaded, unavailable, or returned bad data.")
-            print("[i] Do not worry—your input text is safe. Returning to the model selection menu.")
-            print("    (Press Ctrl+C to abort entirely if you wish to exit)\n")
-
-    # Step 5: Format the English headline into a human-readable folder slug string
+def save_session(parsed_payload):
+    """Creates a session folder named after the English headline and writes one <lang>.md per language."""
     en_node = parsed_payload.get("en", {})
     en_headline = en_node.get("headline", "untitled-post")
 
@@ -164,6 +145,35 @@ def execute_text_pipeline(raw_payload: str) -> str:
 
         print(f" -> Generated: {md_file_name} [OK]")
 
+    return session_directory
+
+def execute_text_pipeline(raw_payload: str) -> str:
+    """Sanitizes the input, asks Gemini until a model succeeds, and returns the new session folder."""
+    clean_text = sanitize_clipboard_text(raw_payload)
+    if not clean_text:
+        print("[ERROR] Input text payload resolved to empty string after serialization pass.")
+        return None
+
+    cached_profile = load_gemini_credentials()
+    api_token = get_gemini_api_token(cached_profile)
+
+    cached_profile["gemini_api_key"] = api_token
+
+    while True:
+        active_model = select_operational_model(cached_profile)
+        # Persists a freshly pasted key even when the model list could not be fetched
+        save_gemini_credentials(api_token, active_model)
+
+        try:
+            parsed_payload = request_translation(clean_text, api_token, active_model)
+            break
+        except Exception as e:
+            print(f"\n[ERROR] Unified SDK processing breakdown on route '{active_model}': {e}")
+            print("[!] The selected model is likely overloaded, unavailable, or returned bad data.")
+            print("[i] Do not worry—your input text is safe. Returning to the model selection menu.")
+            print("    (Press Ctrl+C to abort entirely if you wish to exit)\n")
+
+    session_directory = save_session(parsed_payload)
     print("\n[SUCCESS] Dynamic text processing core run complete.")
     return session_directory
 

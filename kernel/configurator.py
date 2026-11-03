@@ -1,10 +1,7 @@
 import os
 import json
 
-# Paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_DIR = os.path.join(SCRIPT_DIR, "_config")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "channels.json")
+from common import CONFIG_FILE
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -13,7 +10,7 @@ def load_config():
         return json.load(f)
 
 def save_config(config):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     print("\n[+] Configuration saved successfully!")

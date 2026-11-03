@@ -139,13 +139,14 @@ async def compile_and_send_post(client, target_peer, session_dir, channel_intern
         print(f"{log_prefix} [ERROR] Failed to send post for {channel_internal_name}: {e}")
         return False
 
-async def main():
-    session_dir = get_latest_session_directory()
+async def main(session_dir=None):
+    """Publishes the given session, or the latest one when run on its own."""
+    session_dir = session_dir or get_latest_session_directory()
     if not session_dir:
         print("[ERROR] No session directory found inside _workspace.")
         return
 
-    print(f"\n[OK] Onboarded to latest session: _workspace/{os.path.basename(session_dir)}/")
+    print(f"\n[OK] Onboarded to session: _workspace/{os.path.basename(session_dir)}/")
 
     config = load_channels_config()
 

@@ -563,7 +563,7 @@ def main():
     print("  PHASE 4: DEPLOYMENT")
     print("========================================================")
     try:
-        asyncio.run(publisher.main())
+        asyncio.run(publisher.main(session_dir))
     except KeyboardInterrupt:
         print("\n[!] Publisher terminated by user.")
 

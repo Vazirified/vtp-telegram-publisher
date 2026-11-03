@@ -7,6 +7,7 @@ Turns one news item (text plus a photo) into branded image posts with captions a
 - [How it works](#how-it-works)
 - [Setup](#setup)
 - [First run](#first-run)
+- [Web interface](#web-interface)
 - [Running the pipeline](#running-the-pipeline)
 - [Configuration reference](#configuration-reference)
 - [Tools](#tools)
@@ -70,6 +71,39 @@ Without it the app still runs, but Kurdish ڵ ڕ ێ are drawn without their V ma
    ```
    Activate `.venv` first: `.venv\Scripts\activate` on Windows, `source .venv/bin/activate` on Linux/Termux. Enter `me` when it asks for a channel. The session is saved to `_credentials/user_session.session`.
 2. **Gemini API key.** The first time the text phase runs, it asks you to paste a key from Google AI Studio. It's saved to `_credentials/gemini_keys.json`.
+
+Alternatively, do both steps in the browser on the **Setup** page of the [web interface](#web-interface). It also asks for the Telegram API ID and hash when `_credentials/telegram_api.json` is missing.
+
+## Web interface
+
+A browser interface served from the same device. On Android it runs in the phone's own browser, without Termux:X11.
+
+| Platform | Command |
+|---|---|
+| Windows | `run-web.bat` |
+| Linux / Termux | `bash run-web.sh` |
+
+- Starts a server at `http://127.0.0.1:8765/` and opens it in the default browser. Add `--port 9000` to use another port, or `--no-browser` to skip opening it.
+- Only this device can connect. The server listens on `127.0.0.1` and refuses requests addressed to any other host name.
+- Press Ctrl+C in the terminal to stop it.
+- The Telegram session can be used by only one program at a time. Close `run.bat`/`run.sh`, `publisher.py` and `inspect-emoji.py` while the web interface runs, and the other way round. If the Setup page reports `database is locked`, close the other program and click **Try again**.
+- If `.venv` was created before the web interface existed, the launcher installs the missing packages first.
+
+**Pages:**
+- **Telegram:** a read-only viewer.
+  - **Shortcuts** lists the review channel and every channel in `channels.json`; **Chats** lists all your chats, with **Load more** for older ones.
+  - Chats show their profile pictures; chats without one show coloured initials.
+  - Messages show photos, albums, formatting and views. New, edited and deleted messages update live.
+  - **Reactions** appear under each message with their counts; your own reaction is outlined.
+    - In groups and private chats, the names of the people who reacted are shown. Reactions you haven't seen yet are in bold, and **Who reacted** loads the full list. In channels, Telegram keeps reactions anonymous, so only counts are shown.
+    - Reactions update live, also on older messages.
+    - A red ♥ badge in the chat list marks chats with reactions to your messages that you haven't seen yet.
+  - Reading here doesn't mark messages or reactions as read. Tap a photo to open it full size.
+- **Setup:** Telegram API ID and hash, Telegram login (phone, code, 2FA password), the Gemini API key, and checks for `channels.json` and Raqm.
+
+The pipeline itself (ingestion, translation, rendering, publishing) still runs through `run.bat`/`run.sh`. Pages for it are being added to the web interface.
+
+Images shown in the viewer (photos, profile pictures, custom emoji) are cached in `_workspace/web_cache/` and deleted after 7 days.
 
 ## Running the pipeline
 
@@ -276,7 +310,11 @@ kernel/
   common.py         Shared paths, config loading, Gemini helpers
   configurator.py   Channel settings editor
   inspect-emoji.py  Message/emoji inspector
+  webapp.py         Web interface server (FastAPI)
+  telegram_service.py  Telegram login, viewer data and live updates for the web interface
+  web/              Web interface page (HTML, CSS, JavaScript)
   lib/              FriBiDi for Windows (see lib/README.txt)
 requirements.txt    Python packages
 setup.*, run.*      Setup and launch scripts per platform
+run-web.*           Web interface launchers
 ```

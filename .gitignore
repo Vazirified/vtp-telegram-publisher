@@ -1,6 +1,9 @@
 # Secrets: Telegram API keys, Telethon session, Gemini key
 _credentials/
 
+# Local channel config, templates and fonts (contains live chat IDs)
+_config/
+
 # Per-run output (downloaded media, session folders)
 _workspace/
 

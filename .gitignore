@@ -1,0 +1,10 @@
+# Secrets: Telegram API keys, Telethon session, Gemini key
+_credentials/
+
+# Per-run output (downloaded media, session folders)
+_workspace/
+
+# Local Python environment
+.venv/
+__pycache__/
+*.pyc

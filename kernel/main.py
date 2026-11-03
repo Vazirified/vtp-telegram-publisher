@@ -22,152 +22,267 @@ except ImportError as e:
 
 from common import WORKSPACE_DIR
 
-def fetch_telegram_dialogs_async(callback, error_callback, offset_date=None):
-    """Fetches the 30 most recent chats/dialogs, supporting pagination via offset_date."""
+# --- GLOBAL UI COLOR & FONT CONFIGURATION (DARK MODE) ---
+BG_MAIN = "#1e1e1e"        # Main window background
+BG_SEC = "#2d2d2d"         # Inputs and list backgrounds
+FG_MAIN = "#e0e0e0"        # Main text color
+FG_MUTED = "#888888"       # Disabled/Muted text
+BTN_GRAY = "#424242"       # Default button
+BTN_GREEN = "#2e7d32"      # Action button
+BTN_BLUE = "#1565c0"       # Secondary action button
+ACCENT_BLUE = "#64b5f6"    # Hyperlink/Path colors
+
+FONT_MAIN = ("Segoe UI", 11)
+FONT_BOLD = ("Segoe UI", 11, "bold")
+FONT_SMALL = ("Segoe UI", 10)
+FONT_SMALL_BOLD = ("Segoe UI", 10, "bold")
+FONT_TITLE = ("Segoe UI", 12, "bold")
+
+# Button style name -> (background, background while pressed)
+BUTTON_COLORS = {
+    "gray": (BTN_GRAY, "#555555"),
+    "green": (BTN_GREEN, "#388e3c"),
+    "blue": (BTN_BLUE, "#1976d2"),
+}
+
+def make_button(parent, text, command=None, kind="gray", font=FONT_SMALL, **kwargs):
+    """Creates a flat dark-mode button in one of the BUTTON_COLORS styles."""
+    bg, active_bg = BUTTON_COLORS[kind]
+    return tk.Button(parent, text=text, command=command, bg=bg, fg=FG_MAIN,
+                     activebackground=active_bg, activeforeground="white",
+                     font=font, relief="flat", **kwargs)
+
+def make_preview(text, limit=90):
+    """Flattens a message onto one line and cuts it to `limit` characters with an ellipsis."""
+    preview = text.replace('\n', ' ')
+    if len(preview) > limit:
+        preview = preview[:limit - 3] + "..."
+    return preview
+
+# ==========================================
+# TELEGRAM BACKGROUND TASKS
+# ==========================================
+def run_telegram_task(task, callback, error_callback):
+    """Runs `await task(client)` with a fresh Telegram client on a background thread.
+
+    The task's return value is passed to callback. A missing client or any exception
+    is passed to error_callback as a message string.
+    """
     def run_async():
-        async def fetch():
+        async def run():
             client = auth_manager.get_client()
-            if not client: return None
-            dialogs_data = []
+            if not client:
+                raise RuntimeError("Could not initialize the Telegram client. Check _credentials/telegram_api.json.")
             try:
                 await client.start()
-                kwargs = {'limit': 30}
-                if offset_date: kwargs['offset_date'] = offset_date
-
-                async for dialog in client.iter_dialogs(**kwargs):
-                    name = dialog.name or "Unknown Chat"
-                    dialogs_data.append({"id": dialog.id, "name": name, "date": dialog.date})
-                return dialogs_data
-            except Exception as e:
-                return str(e)
+                return await task(client)
             finally:
                 await client.disconnect()
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(fetch())
-        loop.close()
-
-        if isinstance(result, str):
-            error_callback(result)
+        try:
+            result = loop.run_until_complete(run())
+        except Exception as e:
+            error_callback(str(e))
         else:
             callback(result)
+        finally:
+            loop.close()
 
     threading.Thread(target=run_async, daemon=True).start()
+
+def fetch_telegram_dialogs_async(callback, error_callback, offset_date=None):
+    """Fetches the 30 most recent chats/dialogs, supporting pagination via offset_date."""
+    async def fetch(client):
+        kwargs = {'limit': 30}
+        if offset_date: kwargs['offset_date'] = offset_date
+
+        dialogs_data = []
+        async for dialog in client.iter_dialogs(**kwargs):
+            name = dialog.name or "Unknown Chat"
+            dialogs_data.append({"id": dialog.id, "name": name, "date": dialog.date})
+        return dialogs_data
+
+    run_telegram_task(fetch, callback, error_callback)
 
 def fetch_telegram_messages_async(target_entity_id, callback, error_callback, offset_id=0):
     """Fetches the last 20 text messages for the Text Ingestion UI."""
-    def run_async():
-        async def fetch():
-            client = auth_manager.get_client()
-            if not client: return None
-            messages = []
-            try:
-                await client.start()
-                entity = await client.get_entity(target_entity_id)
-                kwargs = {'limit': 20}
-                if offset_id: kwargs['offset_id'] = offset_id
+    async def fetch(client):
+        entity = await client.get_entity(target_entity_id)
+        kwargs = {'limit': 20}
+        if offset_id: kwargs['offset_id'] = offset_id
 
-                async for msg in client.iter_messages(entity, **kwargs):
-                    if msg.text:
-                        date_str = msg.date.strftime("%Y-%m-%d %H:%M")
-                        messages.append({"id": msg.id, "text": msg.text, "date": date_str})
-                return messages
-            except Exception as e:
-                return str(e)
-            finally:
-                await client.disconnect()
+        messages = []
+        async for msg in client.iter_messages(entity, **kwargs):
+            if msg.text:
+                date_str = msg.date.strftime("%Y-%m-%d %H:%M")
+                messages.append({"id": msg.id, "text": msg.text, "date": date_str})
+        return messages
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(fetch())
-        loop.close()
-
-        if isinstance(result, str): error_callback(result)
-        else: callback(result)
-
-    threading.Thread(target=run_async, daemon=True).start()
+    run_telegram_task(fetch, callback, error_callback)
 
 def fetch_telegram_media_context_async(target_entity_id, callback, error_callback, offset_id=0):
     """Fetches all messages (text and media) to provide conversation context for finding files."""
-    def run_async():
-        async def fetch():
-            client = auth_manager.get_client()
-            if not client: return None
-            context_msgs = []
-            try:
-                await client.start()
-                entity = await client.get_entity(target_entity_id)
-                kwargs = {'limit': 20}
-                if offset_id: kwargs['offset_id'] = offset_id
+    async def fetch(client):
+        entity = await client.get_entity(target_entity_id)
+        kwargs = {'limit': 20}
+        if offset_id: kwargs['offset_id'] = offset_id
 
-                async for msg in client.iter_messages(entity, **kwargs):
-                    has_media = bool(msg.photo or msg.document)
+        context_msgs = []
+        async for msg in client.iter_messages(entity, **kwargs):
+            has_media = bool(msg.photo or msg.document)
 
-                    if msg.text or has_media:
-                        date_str = msg.date.strftime("%m-%d %H:%M")
-                        text_snippet = (msg.text or "").replace('\n', ' ')
+            if msg.text or has_media:
+                date_str = msg.date.strftime("%m-%d %H:%M")
+                text_snippet = (msg.text or "").replace('\n', ' ')
 
-                        if not text_snippet and has_media:
-                            text_snippet = "[No Caption]"
+                if not text_snippet and has_media:
+                    text_snippet = "[No Caption]"
 
-                        context_msgs.append({
-                            "id": msg.id,
-                            "text": text_snippet,
-                            "date": date_str,
-                            "has_media": has_media
-                        })
-                return context_msgs
-            except Exception as e:
-                return str(e)
-            finally:
-                await client.disconnect()
+                context_msgs.append({
+                    "id": msg.id,
+                    "text": text_snippet,
+                    "date": date_str,
+                    "has_media": has_media
+                })
+        return context_msgs
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(fetch())
-        loop.close()
-
-        if isinstance(result, str): error_callback(result)
-        else: callback(result)
-
-    threading.Thread(target=run_async, daemon=True).start()
+    run_telegram_task(fetch, callback, error_callback)
 
 def download_telegram_media_async(target_entity_id, message_id, callback, error_callback):
     """Downloads a specific photo or document message to the workspace folder."""
-    def run_async():
-        async def download():
-            client = auth_manager.get_client()
-            if not client: return None
-            try:
-                await client.start()
-                entity = await client.get_entity(target_entity_id)
-                msg = await client.get_messages(entity, ids=message_id)
+    async def download(client):
+        entity = await client.get_entity(target_entity_id)
+        msg = await client.get_messages(entity, ids=message_id)
 
-                if msg and (msg.photo or msg.document):
-                    os.makedirs(WORKSPACE_DIR, exist_ok=True)
-                    downloaded_file = await client.download_media(msg, file=WORKSPACE_DIR)
-                    if downloaded_file:
-                        return downloaded_file
-                    else:
-                        return "Could not download file (unsupported media type or expired)."
-                return "Selected message does not contain a downloadable file."
-            except Exception as e:
-                return str(e)
-            finally:
-                await client.disconnect()
+        if not (msg and (msg.photo or msg.document)):
+            raise RuntimeError("Selected message does not contain a downloadable file.")
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(download())
-        loop.close()
+        os.makedirs(WORKSPACE_DIR, exist_ok=True)
+        downloaded_file = await client.download_media(msg, file=WORKSPACE_DIR)
+        if not downloaded_file or not os.path.exists(downloaded_file):
+            raise RuntimeError("Could not download file (unsupported media type or expired).")
+        return downloaded_file
 
-        if isinstance(result, str) and os.path.exists(result):
-            callback(result)
-        else:
-            error_callback(str(result))
+    run_telegram_task(download, callback, error_callback)
 
-    threading.Thread(target=run_async, daemon=True).start()
+# ==========================================
+# PAGED TELEGRAM BROWSER WINDOW
+# ==========================================
+class PagedBrowser:
+    """A window listing Telegram items page by page, with an action button and "Load More".
+
+    The window opens once the first page arrives. Items are kept in self.items by row id.
+    - columns: list of (column_id, heading, width, anchor); a width of None lets the column stretch.
+    - fetch(cursor, on_success, on_error) loads one page; next_cursor(item) gives the cursor
+      after the last item of a page.
+    - on_action(browser) runs for the action button.
+    - add_extras(browser) adds widgets above the list; setup_tree(browser) adds list bindings.
+    - empty_notice is (messagebox function, title, message) shown when the first page is empty;
+      error_notice is (title, message prefix) for fetch errors.
+    """
+    def __init__(self, root, geometry, trigger_btn, busy_text, title, header_text, columns,
+                 selectmode, fetch, row_values, next_cursor, action_text, on_action,
+                 empty_notice, no_more_text, error_notice,
+                 row_tags=None, add_extras=None, setup_tree=None, header_pady=(10, 5)):
+        self.root = root
+        self.geometry = geometry
+        self.trigger_btn = trigger_btn
+        self.title = title
+        self.header_text = header_text
+        self.header_pady = header_pady
+        self.columns = columns
+        self.selectmode = selectmode
+        self.fetch = fetch
+        self.row_values = row_values
+        self.row_tags = row_tags
+        self.next_cursor = next_cursor
+        self.action_text = action_text
+        self.on_action = on_action
+        self.add_extras = add_extras
+        self.setup_tree = setup_tree
+        self.empty_notice = empty_notice
+        self.no_more_text = no_more_text
+        self.error_notice = error_notice
+
+        self.cursor = None
+        self.items = {}
+        self.win = self.tree = self.action_btn = self.load_btn = None
+
+        trigger_btn.config(text=busy_text, state="disabled")
+        self.load()
+
+    def load(self):
+        if self.load_btn: self.load_btn.config(text="Loading...", state="disabled")
+        self.fetch(self.cursor, self.on_success, self.on_error)
+
+    def restore_trigger(self):
+        self.trigger_btn.config(text=self.trigger_btn._original_text, state="normal")
+
+    def build_window(self):
+        self.win = tk.Toplevel(self.root)
+        self.win.title(self.title)
+        self.win.geometry(self.geometry)
+        self.win.configure(bg=BG_MAIN)
+        tk.Label(self.win, text=self.header_text, font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=self.header_pady, padx=10)
+
+        if self.add_extras: self.add_extras(self)
+
+        list_frame = tk.Frame(self.win, bg=BG_MAIN)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        column_ids = [col[0] for col in self.columns]
+        self.tree = ttk.Treeview(list_frame, columns=column_ids, show="headings", selectmode=self.selectmode, yscrollcommand=scrollbar.set)
+        for column_id, heading, width, anchor in self.columns:
+            self.tree.heading(column_id, text=heading)
+            if width:
+                self.tree.column(column_id, width=width, anchor=anchor, stretch=False)
+            else:
+                self.tree.column(column_id, anchor=anchor)
+
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.tree.yview)
+
+        if self.setup_tree: self.setup_tree(self)
+
+        btn_frame = tk.Frame(self.win, bg=BG_MAIN)
+        btn_frame.pack(fill="x", padx=10, pady=10)
+        self.action_btn = make_button(btn_frame, self.action_text, lambda: self.on_action(self), kind="green", font=FONT_SMALL_BOLD, pady=4)
+        self.action_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
+        self.load_btn = make_button(btn_frame, "Load More", self.load, kind="blue", font=FONT_SMALL_BOLD, pady=4)
+        self.load_btn.pack(side="right", expand=True, fill="x", padx=(5, 0))
+
+    def on_success(self, new_items):
+        self.restore_trigger()
+
+        if not self.win:
+            if not new_items:
+                show, title, message = self.empty_notice
+                show(title, message)
+                return
+            self.build_window()
+
+        if not new_items:
+            self.load_btn.config(text=self.no_more_text, state="disabled")
+            return
+
+        for item in new_items:
+            iid = str(item['id'])
+            self.items[iid] = item
+            tags = self.row_tags(item) if self.row_tags else ()
+            self.tree.insert("", tk.END, iid=iid, values=self.row_values(item), tags=tags)
+
+        self.cursor = self.next_cursor(new_items[-1])
+        self.load_btn.config(text="Load More", state="normal")
+
+    def on_error(self, err_msg):
+        self.restore_trigger()
+        if self.load_btn: self.load_btn.config(text="Load More", state="normal")
+        title, prefix = self.error_notice
+        messagebox.showerror(title, f"{prefix}:\n\n{err_msg}")
 
 
 def run_ingestion_gui():
@@ -183,22 +298,6 @@ def run_ingestion_gui():
     # Format: "width x height + x_offset + y_offset"
     quadrant_geometry = f"{quad_w}x{quad_h}+0+0"
     root.geometry(quadrant_geometry)
-
-    # --- GLOBAL UI COLOR & FONT CONFIGURATION (DARK MODE) ---
-    BG_MAIN = "#1e1e1e"        # Main window background
-    BG_SEC = "#2d2d2d"         # Inputs and list backgrounds
-    FG_MAIN = "#e0e0e0"        # Main text color
-    FG_MUTED = "#888888"       # Disabled/Muted text
-    BTN_GRAY = "#424242"       # Default button
-    BTN_GREEN = "#2e7d32"      # Action button
-    BTN_BLUE = "#1565c0"       # Secondary action button
-    ACCENT_BLUE = "#64b5f6"    # Hyperlink/Path colors
-
-    FONT_MAIN = ("Segoe UI", 11)
-    FONT_BOLD = ("Segoe UI", 11, "bold")
-    FONT_SMALL = ("Segoe UI", 10)
-    FONT_SMALL_BOLD = ("Segoe UI", 10, "bold")
-    FONT_TITLE = ("Segoe UI", 12, "bold")
 
     root.configure(padx=20, pady=20, bg=BG_MAIN)
 
@@ -223,82 +322,32 @@ def run_ingestion_gui():
     payload = {"text": None, "image_path": None}
 
     # ==========================================
-    # 1. CHAT / DIALOG BROWSER (TREEVIEW)
+    # 1. CHAT / DIALOG BROWSER
     # ==========================================
     def create_dialog_browser(title, next_step_callback, trigger_btn):
-        trigger_btn.config(text="Fetching Chats...", state="disabled")
-        all_dialogs = []
-        state = {'last_date': None, 'win': None, 'listbox': None, 'load_btn': None}
+        def on_select(browser):
+            selected_items = browser.tree.selection()
+            if not selected_items: return
 
-        columns = ("Chat Name",)
+            selected_dialog = browser.items.get(selected_items[0])
+            if selected_dialog:
+                browser.win.destroy()
+                next_step_callback(selected_dialog['id'], selected_dialog['name'])
 
-        def load_dialogs():
-            if state['load_btn']: state['load_btn'].config(text="Loading...", state="disabled")
-            fetch_telegram_dialogs_async(on_dlg_success, on_dlg_error, offset_date=state['last_date'])
-
-        def on_dlg_success(new_dialogs):
-            trigger_btn.config(text=trigger_btn._original_text, state="normal")
-
-            if not state['win']:
-                if not new_dialogs:
-                    messagebox.showerror("Error", "Could not find any recent chats.")
-                    return
-
-                state['win'] = tk.Toplevel(root)
-                state['win'].title(title)
-                # Apply dynamic quadrant geometry
-                state['win'].geometry(quadrant_geometry)
-                state['win'].configure(bg=BG_MAIN)
-
-                tk.Label(state['win'], text="Recent Telegram Chats:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 5), padx=10)
-
-                list_frame = tk.Frame(state['win'], bg=BG_MAIN)
-                list_frame.pack(fill="both", expand=True, padx=10, pady=5)
-                scrollbar = tk.Scrollbar(list_frame)
-                scrollbar.pack(side="right", fill="y")
-
-                state['listbox'] = ttk.Treeview(list_frame, columns=columns, show="headings", selectmode="browse", yscrollcommand=scrollbar.set)
-                state['listbox'].heading("Chat Name", text="Chat Name")
-                state['listbox'].column("Chat Name", anchor="w")
-
-                state['listbox'].pack(side="left", fill="both", expand=True)
-                scrollbar.config(command=state['listbox'].yview)
-
-                def on_select(event=None):
-                    selected_items = state['listbox'].selection()
-                    if not selected_items: return
-
-                    selected_dialog_id = selected_items[0]
-                    selected_dialog = next((d for d in all_dialogs if str(d['id']) == selected_dialog_id), None)
-                    if selected_dialog:
-                        state['win'].destroy()
-                        next_step_callback(selected_dialog['id'], selected_dialog['name'])
-
-                state['listbox'].bind("<Double-Button-1>", on_select)
-
-                btn_frame = tk.Frame(state['win'], bg=BG_MAIN)
-                btn_frame.pack(fill="x", padx=10, pady=10)
-                tk.Button(btn_frame, text="View Contents", command=on_select, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4).pack(side="left", expand=True, fill="x", padx=(0, 5))
-                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_dialogs, bg=BTN_BLUE, fg=FG_MAIN, activebackground="#1976d2", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
-                state['load_btn'].pack(side="right", expand=True, fill="x", padx=(5, 0))
-
-            if not new_dialogs:
-                if state['load_btn']: state['load_btn'].config(text="No more chats", state="disabled")
-                return
-
-            for d in new_dialogs:
-                all_dialogs.append(d)
-                state['listbox'].insert("", tk.END, iid=str(d['id']), values=(d['name'],))
-
-            state['last_date'] = new_dialogs[-1]['date']
-            if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
-
-        def on_dlg_error(err_msg):
-            trigger_btn.config(text=trigger_btn._original_text, state="normal")
-            if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
-            messagebox.showerror("Telegram Error", f"Failed to fetch chats:\n\n{err_msg}")
-
-        load_dialogs()
+        PagedBrowser(
+            root, quadrant_geometry, trigger_btn, busy_text="Fetching Chats...",
+            title=title, header_text="Recent Telegram Chats:",
+            columns=[("Chat Name", "Chat Name", None, "w")],
+            selectmode="browse",
+            fetch=lambda cursor, ok, err: fetch_telegram_dialogs_async(ok, err, offset_date=cursor),
+            row_values=lambda d: (d['name'],),
+            next_cursor=lambda d: d['date'],
+            action_text="View Contents", on_action=on_select,
+            setup_tree=lambda browser: browser.tree.bind("<Double-Button-1>", lambda event: on_select(browser)),
+            empty_notice=(messagebox.showerror, "Error", "Could not find any recent chats."),
+            no_more_text="No more chats",
+            error_notice=("Telegram Error", "Failed to fetch chats"),
+        )
 
 
     # ==========================================
@@ -308,7 +357,7 @@ def run_ingestion_gui():
     text_header_frame.pack(fill="x", pady=(0, 5))
     tk.Label(text_header_frame, text="1. Source Text (Paste manually or Fetch):", font=FONT_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(side="left")
 
-    fetch_txt_btn = tk.Button(text_header_frame, text="Fetch Text from Telegram", font=FONT_SMALL, bg=BTN_GRAY, fg=FG_MAIN, activebackground="#555555", activeforeground="white", relief="flat", width=22)
+    fetch_txt_btn = make_button(text_header_frame, "Fetch Text from Telegram", width=22)
     fetch_txt_btn._original_text = "Fetch Text from Telegram"
     fetch_txt_btn.pack(side="right")
 
@@ -316,99 +365,51 @@ def run_ingestion_gui():
     text_input.pack(pady=5, fill="both", expand=True)
 
     def open_message_browser(dialog_id, dialog_name):
-        fetch_txt_btn.config(text="Fetching...", state="disabled")
-        all_messages = []
-        state = {'last_id': 0, 'win': None, 'listbox': None, 'load_btn': None, 'multi_select_var': None}
+        def add_multi_select_toggle(browser):
+            browser.multi_select_var = tk.BooleanVar(value=True)
+            tk.Checkbutton(browser.win, text="Easy Multi-Select (Click to toggle, no Ctrl needed)", variable=browser.multi_select_var, font=FONT_SMALL, bg=BG_MAIN, fg=FG_MAIN, selectcolor=BG_SEC, activebackground=BG_MAIN, activeforeground=FG_MAIN).pack(anchor="w", padx=10, pady=(0, 5))
 
-        text_cols = ("Date", "Message Text")
+        def bind_click_toggle(browser):
+            tree = browser.tree
 
-        def load_msgs():
-            if state['load_btn']: state['load_btn'].config(text="Loading...", state="disabled")
-            fetch_telegram_messages_async(dialog_id, on_success, on_error, offset_id=state['last_id'])
+            def on_tree_click(event):
+                if browser.multi_select_var.get():
+                    region = tree.identify("region", event.x, event.y)
+                    if region in ("cell", "tree", "indicator"):
+                        item_id = tree.identify_row(event.y)
+                        if item_id:
+                            if item_id in tree.selection():
+                                tree.selection_remove(item_id)
+                            else:
+                                tree.selection_add(item_id)
+                            tree.focus(item_id)
+                            return "break"
 
-        def on_success(new_msgs):
-            fetch_txt_btn.config(text=fetch_txt_btn._original_text, state="normal")
-            if not state['win']:
-                if not new_msgs:
-                    messagebox.showinfo("Telegram", f"No text messages found in {dialog_name}.")
-                    return
-                state['win'] = tk.Toplevel(root)
-                state['win'].title(f"Texts from: {dialog_name}")
-                # Apply dynamic quadrant geometry
-                state['win'].geometry(quadrant_geometry)
-                state['win'].configure(bg=BG_MAIN)
-                tk.Label(state['win'], text="Select messages:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 0), padx=10)
+            tree.bind("<Button-1>", on_tree_click)
 
-                state['multi_select_var'] = tk.BooleanVar(value=True)
-                tk.Checkbutton(state['win'], text="Easy Multi-Select (Click to toggle, no Ctrl needed)", variable=state['multi_select_var'], font=FONT_SMALL, bg=BG_MAIN, fg=FG_MAIN, selectcolor=BG_SEC, activebackground=BG_MAIN, activeforeground=FG_MAIN).pack(anchor="w", padx=10, pady=(0, 5))
+        def on_insert(browser):
+            selected_items = browser.tree.selection()
+            if not selected_items: return
+            for item_id in selected_items:
+                msg_data = browser.items.get(item_id)
+                if msg_data:
+                    text_input.insert(tk.END, msg_data['text'] + "\n\n")
+            browser.win.destroy()
 
-                list_frame = tk.Frame(state['win'], bg=BG_MAIN)
-                list_frame.pack(fill="both", expand=True, padx=10, pady=5)
-                scrollbar = tk.Scrollbar(list_frame)
-                scrollbar.pack(side="right", fill="y")
-
-                state['listbox'] = ttk.Treeview(list_frame, columns=text_cols, show="headings", selectmode="extended", yscrollcommand=scrollbar.set)
-
-                state['listbox'].heading("Date", text="Timestamp")
-                state['listbox'].column("Date", width=140, anchor="center", stretch=False)
-
-                state['listbox'].heading("Message Text", text="Message Text")
-                state['listbox'].column("Message Text", anchor="e")
-
-                state['listbox'].pack(side="left", fill="both", expand=True)
-                scrollbar.config(command=state['listbox'].yview)
-
-                def on_tree_click(event):
-                    if state['multi_select_var'].get():
-                        region = state['listbox'].identify("region", event.x, event.y)
-                        if region in ("cell", "tree", "indicator"):
-                            item_id = state['listbox'].identify_row(event.y)
-                            if item_id:
-                                if item_id in state['listbox'].selection():
-                                    state['listbox'].selection_remove(item_id)
-                                else:
-                                    state['listbox'].selection_add(item_id)
-                                state['listbox'].focus(item_id)
-                                return "break"
-
-                state['listbox'].bind("<Button-1>", on_tree_click)
-
-                def on_insert():
-                    selected_items = state['listbox'].selection()
-                    if not selected_items: return
-                    for item_id in selected_items:
-                        msg_data = next((m for m in all_messages if str(m['id']) == item_id), None)
-                        if msg_data:
-                            text_input.insert(tk.END, msg_data['text'] + "\n\n")
-                    state['win'].destroy()
-
-                btn_frame = tk.Frame(state['win'], bg=BG_MAIN)
-                btn_frame.pack(fill="x", padx=10, pady=10)
-                tk.Button(btn_frame, text="Insert Selected", command=on_insert, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4).pack(side="left", expand=True, fill="x", padx=(0, 5))
-                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_msgs, bg=BTN_BLUE, fg=FG_MAIN, activebackground="#1976d2", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
-                state['load_btn'].pack(side="right", expand=True, fill="x", padx=(5, 0))
-
-            if not new_msgs:
-                if state['load_btn']: state['load_btn'].config(text="No more messages", state="disabled")
-                return
-
-            for msg in new_msgs:
-                all_messages.append(msg)
-                preview = msg['text'].replace('\n', ' ')
-                # CUTTING STRATEGY: Limit length to 90 chars and append an ellipsis
-                if len(preview) > 90:
-                    preview = preview[:87] + "..."
-                state['listbox'].insert("", tk.END, iid=str(msg['id']), values=(msg['date'], preview))
-
-            state['last_id'] = new_msgs[-1]['id']
-            if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
-
-        def on_error(err_msg):
-            fetch_txt_btn.config(text=fetch_txt_btn._original_text, state="normal")
-            if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
-            messagebox.showerror("Error", f"Failed to fetch:\n\n{err_msg}")
-
-        load_msgs()
+        PagedBrowser(
+            root, quadrant_geometry, fetch_txt_btn, busy_text="Fetching...",
+            title=f"Texts from: {dialog_name}", header_text="Select messages:", header_pady=(10, 0),
+            columns=[("Date", "Timestamp", 140, "center"), ("Message Text", "Message Text", None, "e")],
+            selectmode="extended",
+            fetch=lambda cursor, ok, err: fetch_telegram_messages_async(dialog_id, ok, err, offset_id=cursor),
+            row_values=lambda msg: (msg['date'], make_preview(msg['text'])),
+            next_cursor=lambda msg: msg['id'],
+            action_text="Insert Selected", on_action=on_insert,
+            add_extras=add_multi_select_toggle, setup_tree=bind_click_toggle,
+            empty_notice=(messagebox.showinfo, "Telegram", f"No text messages found in {dialog_name}."),
+            no_more_text="No more messages",
+            error_notice=("Error", "Failed to fetch"),
+        )
 
     fetch_txt_btn.config(command=lambda: create_dialog_browser("Select Chat for Text", open_message_browser, fetch_txt_btn))
 
@@ -432,126 +433,63 @@ def run_ingestion_gui():
         filepath = filedialog.askopenfilename(title="Select Raw Image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
         if filepath: img_path_var.set(filepath)
 
-    tk.Button(action_btn_frame, text="Browse Local...", font=FONT_SMALL, command=browse_image, bg=BTN_GRAY, fg=FG_MAIN, activebackground="#555555", activeforeground="white", relief="flat", width=15).pack(side="left", padx=(0, 10))
+    make_button(action_btn_frame, "Browse Local...", browse_image, width=15).pack(side="left", padx=(0, 10))
 
-    fetch_img_btn = tk.Button(action_btn_frame, text="Fetch from Telegram", font=FONT_SMALL, bg=BTN_GRAY, fg=FG_MAIN, activebackground="#555555", activeforeground="white", relief="flat", width=22)
+    fetch_img_btn = make_button(action_btn_frame, "Fetch from Telegram", width=22)
     fetch_img_btn._original_text = "Fetch from Telegram"
     fetch_img_btn.pack(side="left")
 
     def open_media_context_browser(dialog_id, dialog_name):
-        fetch_img_btn.config(text="Fetching Messages...", state="disabled")
-        all_msgs = []
-        state = {'last_id': 0, 'win': None, 'listbox': None, 'load_btn': None, 'dl_btn': None}
+        def setup_media_tree(browser):
+            tree = browser.tree
+            tree.tag_configure("disabled", foreground=FG_MUTED)
 
-        media_cols = ("Date", "Type", "Message Text")
+            def on_select_check(event):
+                selected_items = tree.selection()
+                if not selected_items: return
+                if "disabled" in tree.item(selected_items[0], "tags"):
+                    tree.selection_remove(selected_items[0])
 
-        def load_context():
-            if state['load_btn']: state['load_btn'].config(text="Loading...", state="disabled")
-            fetch_telegram_media_context_async(dialog_id, on_success, on_error, offset_id=state['last_id'])
+            tree.bind("<<TreeviewSelect>>", on_select_check)
 
-        def on_success(new_msgs):
-            fetch_img_btn.config(text=fetch_img_btn._original_text, state="normal")
-            if not state['win']:
-                if not new_msgs:
-                    messagebox.showinfo("Telegram", f"No messages found in {dialog_name}.")
-                    return
-                state['win'] = tk.Toplevel(root)
-                state['win'].title(f"Media & Context from: {dialog_name}")
-                # Apply dynamic quadrant geometry
-                state['win'].geometry(quadrant_geometry)
-                state['win'].configure(bg=BG_MAIN)
-                tk.Label(state['win'], text="Select a message containing a file/photo to download:", font=FONT_SMALL_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w", pady=(10, 5), padx=10)
+        def on_download(browser):
+            selected_items = browser.tree.selection()
+            if not selected_items: return
 
-                list_frame = tk.Frame(state['win'], bg=BG_MAIN)
-                list_frame.pack(fill="both", expand=True, padx=10, pady=5)
-                scrollbar = tk.Scrollbar(list_frame)
-                scrollbar.pack(side="right", fill="y")
-
-                state['listbox'] = ttk.Treeview(list_frame, selectmode="browse", columns=media_cols, show="headings", yscrollcommand=scrollbar.set)
-
-                state['listbox'].heading("Date", text="Timestamp")
-                state['listbox'].column("Date", width=140, anchor="center", stretch=False)
-
-                state['listbox'].heading("Type", text="Type")
-                state['listbox'].column("Type", width=100, anchor="center", stretch=False)
-
-                state['listbox'].heading("Message Text", text="Message Text")
-                state['listbox'].column("Message Text", anchor="e")
-
-                state['listbox'].pack(side="left", fill="both", expand=True)
-                scrollbar.config(command=state['listbox'].yview)
-
-                state['listbox'].tag_configure("disabled", foreground=FG_MUTED)
-
-                def on_select_check(event):
-                    selected_items = state['listbox'].selection()
-                    if not selected_items: return
-                    item_id = selected_items[0]
-                    tags = state['listbox'].item(item_id, "tags")
-                    if "disabled" in tags:
-                        state['listbox'].selection_remove(item_id)
-
-                state['listbox'].bind("<<TreeviewSelect>>", on_select_check)
-
-                def on_download():
-                    selected_items = state['listbox'].selection()
-                    if not selected_items: return
-                    item_id = selected_items[0]
-
-                    target_msg = next((m for m in all_msgs if str(m['id']) == item_id), None)
-
-                    if not target_msg or not target_msg['has_media']:
-                        messagebox.showwarning("Invalid Selection", "This message does not contain a file or photo.\nPlease select a message marked with 📎 MEDIA.")
-                        return
-
-                    state['dl_btn'].config(text="Downloading...", state="disabled")
-                    state['load_btn'].config(state="disabled")
-
-                    def on_dl_success(filepath):
-                        img_path_var.set(filepath)
-                        state['win'].destroy()
-
-                    def on_dl_error(err_msg):
-                        state['dl_btn'].config(text="Download & Use", state="normal")
-                        state['load_btn'].config(state="normal")
-                        messagebox.showerror("Error", f"Failed to download file:\n\n{err_msg}")
-
-                    download_telegram_media_async(dialog_id, target_msg['id'], on_dl_success, on_dl_error)
-
-                btn_frame = tk.Frame(state['win'], bg=BG_MAIN)
-                btn_frame.pack(fill="x", padx=10, pady=10)
-                state['dl_btn'] = tk.Button(btn_frame, text="Download & Use", command=on_download, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
-                state['dl_btn'].pack(side="left", expand=True, fill="x", padx=(0, 5))
-                state['load_btn'] = tk.Button(btn_frame, text="Load More", command=load_context, bg=BTN_BLUE, fg=FG_MAIN, activebackground="#1976d2", activeforeground="white", font=FONT_SMALL_BOLD, relief="flat", pady=4)
-                state['load_btn'].pack(side="right", expand=True, fill="x", padx=(5, 0))
-
-            if not new_msgs:
-                if state['load_btn']: state['load_btn'].config(text="No more messages", state="disabled")
+            target_msg = browser.items.get(selected_items[0])
+            if not target_msg or not target_msg['has_media']:
+                messagebox.showwarning("Invalid Selection", "This message does not contain a file or photo.\nPlease select a message marked with 📎 MEDIA.")
                 return
 
-            for msg in new_msgs:
-                all_msgs.append(msg)
-                snippet = msg['text'].replace('\n', ' ')
-                # CUTTING STRATEGY: Limit length to 90 chars and append an ellipsis
-                if len(snippet) > 90:
-                    snippet = snippet[:87] + "..."
-                msg_type = "📎 MEDIA" if msg['has_media'] else "💬 TEXT"
+            browser.action_btn.config(text="Downloading...", state="disabled")
+            browser.load_btn.config(state="disabled")
 
-                item_tags = ()
-                if not msg['has_media']:
-                    item_tags = ("disabled",)
+            def on_dl_success(filepath):
+                img_path_var.set(filepath)
+                browser.win.destroy()
 
-                state['listbox'].insert("", tk.END, iid=str(msg['id']), values=(msg['date'], msg_type, snippet), tags=item_tags)
+            def on_dl_error(err_msg):
+                browser.action_btn.config(text="Download & Use", state="normal")
+                browser.load_btn.config(state="normal")
+                messagebox.showerror("Error", f"Failed to download file:\n\n{err_msg}")
 
-            state['last_id'] = new_msgs[-1]['id']
-            if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
+            download_telegram_media_async(dialog_id, target_msg['id'], on_dl_success, on_dl_error)
 
-        def on_error(err_msg):
-            fetch_img_btn.config(text=fetch_img_btn._original_text, state="normal")
-            if state['load_btn']: state['load_btn'].config(text="Load More", state="normal")
-            messagebox.showerror("Error", f"Failed to fetch context:\n\n{err_msg}")
-
-        load_context()
+        PagedBrowser(
+            root, quadrant_geometry, fetch_img_btn, busy_text="Fetching Messages...",
+            title=f"Media & Context from: {dialog_name}", header_text="Select a message containing a file/photo to download:",
+            columns=[("Date", "Timestamp", 140, "center"), ("Type", "Type", 100, "center"), ("Message Text", "Message Text", None, "e")],
+            selectmode="browse",
+            fetch=lambda cursor, ok, err: fetch_telegram_media_context_async(dialog_id, ok, err, offset_id=cursor),
+            row_values=lambda msg: (msg['date'], "📎 MEDIA" if msg['has_media'] else "💬 TEXT", make_preview(msg['text'])),
+            row_tags=lambda msg: () if msg['has_media'] else ("disabled",),
+            next_cursor=lambda msg: msg['id'],
+            action_text="Download & Use", on_action=on_download,
+            setup_tree=setup_media_tree,
+            empty_notice=(messagebox.showinfo, "Telegram", f"No messages found in {dialog_name}."),
+            no_more_text="No more messages",
+            error_notice=("Error", "Failed to fetch context"),
+        )
 
     fetch_img_btn.config(command=lambda: create_dialog_browser("Select Chat for Image", open_media_context_browser, fetch_img_btn))
 
@@ -578,7 +516,7 @@ def run_ingestion_gui():
         root.quit()
         root.destroy()
 
-    tk.Button(submit_frame, text="Start Processing Pipeline", command=on_submit, bg=BTN_GREEN, fg=FG_MAIN, activebackground="#388e3c", activeforeground="white", font=FONT_TITLE, width=30, pady=8, relief="flat").pack(side="right")
+    make_button(submit_frame, "Start Processing Pipeline", on_submit, kind="green", font=FONT_TITLE, width=30, pady=8).pack(side="right")
 
     def on_close():
         root.quit()

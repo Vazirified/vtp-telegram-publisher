@@ -1,7 +1,15 @@
 import os
 import glob
 import tkinter as tk
-from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter
+
+# Imported before PIL so the bundled FriBiDi is on PATH when Pillow loads it
+from common import (
+    PROJECT_ROOT,
+    load_channels_config, get_latest_session_directory, input_with_timeout,
+    load_gemini_credentials, select_operational_model,
+)
+
+from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter, features
 import arabic_reshaper
 from bidi.algorithm import get_display
 
@@ -11,13 +19,12 @@ try:
 except ImportError:
     genai = None
 
-from common import (
-    PROJECT_ROOT,
-    load_channels_config, get_latest_session_directory, input_with_timeout,
-    load_gemini_credentials, select_operational_model,
-)
-
 KURDISH_LANG_CODES = ['ckb', 'ku', 'kurdish']
+
+# Raqm (HarfBuzz + FriBiDi) shapes RTL text properly from the raw string.
+# Without it we fall back to arabic_reshaper + python-bidi, which cannot
+# shape the Kurdish letters ڵ ڕ ێ ە and has to substitute look-alikes.
+RAQM_AVAILABLE = features.check("raqm")
 
 def extract_markdown_headline(md_file_path):
     if not os.path.exists(md_file_path): return None
@@ -27,7 +34,11 @@ def extract_markdown_headline(md_file_path):
     return None
 
 def shape_rtl(text, lang_code=None, custom_reshaper=None):
-    """Reshapes and reorders RTL text for drawing, with Kurdish glyph workarounds."""
+    """Fallback RTL shaping for when Raqm is unavailable.
+
+    arabic_reshaper has no presentation forms for the Kurdish letters ڵ ڕ ێ ە,
+    so they are swapped for look-alikes; ڵ ڕ ێ lose their V mark as a result.
+    """
     process_line = text
     if lang_code in KURDISH_LANG_CODES:
         # 1. Pre-Reshape Setup
@@ -46,11 +57,15 @@ def shape_rtl(text, lang_code=None, custom_reshaper=None):
         reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
         reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
 
-        # Chop the Lam-Teh Marbuta ligatures in half to prevent Tofu boxes
-        reshaped = reshaped.replace('\uFEF5', '\uFEDD\uFEEA') # Lam Isolated + Final Heh
-        reshaped = reshaped.replace('\uFEF6', '\uFEDE\uFEEA') # Lam Medial + Final Heh
-
     return get_display(reshaped)
+
+def prepare_line(text, is_rtl, lang_code=None, custom_reshaper=None):
+    """Returns the text to draw and the extra textlength/text arguments it needs."""
+    if not is_rtl:
+        return text, {}
+    if RAQM_AVAILABLE:
+        return text, {"direction": "rtl", "language": lang_code}
+    return shape_rtl(text, lang_code, custom_reshaper), {}
 
 def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, lang_code=None):
     """Wraps text intelligently. Uses a custom RTL reshaper if provided."""
@@ -58,11 +73,9 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, l
     lines, current_line = [], []
     for word in words:
         test_line = ' '.join(current_line + [word])
-        text_to_measure = test_line
-        if is_rtl:
-            text_to_measure = shape_rtl(test_line, lang_code, custom_reshaper)
+        text_to_measure, layout_args = prepare_line(test_line, is_rtl, lang_code, custom_reshaper)
 
-        if draw.textlength(text_to_measure, font=font) <= max_width:
+        if draw.textlength(text_to_measure, font=font, **layout_args) <= max_width:
             current_line.append(word)
         else:
             lines.append(' '.join(current_line))
@@ -147,6 +160,10 @@ def render_channel_assets(session_dir=None):
     if aoi_choice.lower() in ['y', 'yes']:
         global_aoi = select_aoi_on_image(raw_path)
 
+    if not RAQM_AVAILABLE:
+        print("[!] Raqm text layout is unavailable (FriBiDi library not found).")
+        print("    Falling back to arabic_reshaper: Kurdish letters ڵ ڕ ێ will render without their V mark.")
+
     blur_input = input_with_timeout("[?] Enter background blur radius", "30").strip()
     try:
         blur_radius = int(blur_input) if blur_input else 30
@@ -165,7 +182,7 @@ def render_channel_assets(session_dir=None):
         placement = layout["raw_image_placement"]
 
         custom_reshaper = None
-        if is_rtl:
+        if is_rtl and not RAQM_AVAILABLE:
             # FORCE ARABIC MODE TO ENSURE STABLE SHAPING
             reshaper_config = {
                 'language': 'Arabic',
@@ -308,11 +325,9 @@ def render_channel_assets(session_dir=None):
             current_y = render_y + y_offset
 
             for line in lines:
-                text_to_draw = line
-                if is_rtl:
-                    text_to_draw = shape_rtl(line, lang_code, custom_reshaper)
+                text_to_draw, layout_args = prepare_line(line, is_rtl, lang_code, custom_reshaper)
 
-                line_w = draw.textlength(text_to_draw, font=font)
+                line_w = draw.textlength(text_to_draw, font=font, **layout_args)
                 if alignment == "center":
                     line_start_x = render_x + ((max_w - line_w) / 2)
                 elif alignment == "right":
@@ -320,7 +335,7 @@ def render_channel_assets(session_dir=None):
                 else:
                     line_start_x = render_x
 
-                draw.text((line_start_x, current_y), text_to_draw, font=font, fill=color)
+                draw.text((line_start_x, current_y), text_to_draw, font=font, fill=color, **layout_args)
                 current_y += line_height
 
         final_hd_image = canvas.convert("RGB")

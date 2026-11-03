@@ -13,6 +13,12 @@ GEMINI_KEYS_FILE = os.path.join(CREDENTIALS_DIR, "gemini_keys.json")
 
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 
+# On Windows, Pillow finds FriBiDi (needed for Raqm text shaping) through PATH.
+# This must run before PIL.ImageFont is first imported.
+BUNDLED_LIB_DIR = os.path.join(PROJECT_ROOT, "kernel", "lib")
+if sys.platform == "win32" and os.path.isdir(BUNDLED_LIB_DIR):
+    os.environ["PATH"] = BUNDLED_LIB_DIR + os.pathsep + os.environ.get("PATH", "")
+
 def load_channels_config():
     """Reads the channel configuration from _config/channels.json."""
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:

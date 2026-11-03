@@ -150,25 +150,37 @@ async function refreshStatus() {
 
 const telegramReady = () => app.status && app.status.telegram.state === "ready";
 
+/** #/page/arg/arg2, e.g. #/telegram/<chat id>/<message id> or #/post/<session name>. */
 function currentRoute() {
-  const [page, arg] = location.hash.replace(/^#\/?/, "").split("/");
-  return { page: page || "telegram", arg };
+  const [page, arg, arg2] = location.hash.replace(/^#\/?/, "").split("/");
+  return { page: page || "telegram", arg: arg && decodeURIComponent(arg), arg2 };
 }
 
 async function route() {
-  const { page, arg } = currentRoute();
-  document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === page));
+  const { page, arg, arg2 } = currentRoute();
+  const tab = page === "post" ? "posts" : page;
+  document.querySelectorAll(".tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === tab));
+
+  // The viewer stays mounted while moving between chats; any other page replaces the view
+  const keepViewer = page === "telegram" && app.view instanceof TelegramView;
+  if (app.view && !keepViewer && app.view.leave) app.view.leave();
 
   if (page === "setup") {
     app.view = null;
     await renderSetup();
-    return;
+  } else if (page === "posts") {
+    app.view = null;
+    await renderPosts();
+  } else if (page === "post") {
+    app.view = arg === "new" ? new NewPostView() : new PostView(arg);
+    await app.view.mount();
+  } else {
+    if (!keepViewer) {
+      app.view = new TelegramView();
+      app.view.mount();
+    }
+    app.view.openChat(arg ? Number(arg) : null, arg2 ? Number(arg2) : null);
   }
-  if (!(app.view instanceof TelegramView)) {
-    app.view = new TelegramView();
-    app.view.mount();
-  }
-  app.view.openChat(arg ? Number(arg) : null);
 }
 
 // ==========================================
@@ -192,178 +204,88 @@ function prettyAction(action) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-class TelegramView {
-  constructor() {
-    this.dialogs = [];
-    this.shortcuts = [];
+/**
+ * The messages of one chat in a scrolling box: bubbles, albums, reactions, "Load older" and live
+ * updates. Used by the Telegram tab and by the review chat on the post page.
+ */
+class ChatPane {
+  /** selected: message IDs to draw as selected (the Telegram tab's select mode shares its Set). */
+  constructor(box, { selected = new Set() } = {}) {
+    this.box = box;
+    this.selected = selected;
     this.chat = null;
     this.reloadTimer = null;
-    this.dialogTimer = null;
+    this.single = null; // message ID when only that message is shown (openMessage)
+    // Reaction picker: the message it is open under, whether "More" was tapped, the last error
+    this.pickerFor = null;
+    this.pickerExpanded = false;
+    this.reactError = null;
   }
 
-  mount() {
-    const view = viewRoot();
-    if (!telegramReady()) {
-      this.unavailable = true;
-      const state = app.status ? app.status.telegram.state : "offline";
-      view.replaceChildren(h("div", { class: "page" }, h("div", { class: "card" },
-        h("h2", {}, "Telegram"),
-        state === "connecting"
-          ? h("p", { class: "muted" }, "Connecting to Telegram...")
-          : h("p", {}, "Telegram isn't connected yet. ", h("a", { href: "#/setup" }, "Open Setup"), " to log in."))));
-      return;
-    }
+  get id() { return this.chat ? this.chat.id : null; }
+  get info() { return this.chat ? this.chat.info : null; }
 
-    this.shortcutList = h("ul", { class: "chat-items" });
-    this.dialogList = h("ul", { class: "chat-items" });
-    this.moreButton = h("button", { class: "btn", onclick: () => this.loadDialogs(true) }, "Load more chats");
-    const list = h("aside", { class: "tg-list" },
-      h("div", { class: "tg-section-title" }, "Shortcuts"), this.shortcutList,
-      h("div", { class: "tg-section-title" }, "Chats"), this.dialogList,
-      h("div", { class: "list-footer" }, this.moreButton));
-
-    this.chatTitle = h("div", { class: "title" });
-    this.messagesBox = h("div", { class: "messages" });
-    const chatPane = h("section", { class: "tg-chat" },
-      h("header", { class: "chat-head" },
-        h("button", { class: "icon-btn back", title: "Back to chats", onclick: () => { location.hash = "#/telegram"; } }, "←"),
-        this.chatTitle,
-        h("button", { class: "icon-btn", title: "Reload messages", onclick: () => this.reloadChat() }, "⟳")),
-      this.messagesBox);
-
-    this.root = h("div", { class: "tg" }, list, chatPane);
-    view.replaceChildren(this.root);
-    this.loadShortcuts();
-    this.loadDialogs(false);
+  clear(text) {
+    this.chat = null;
+    this.box.replaceChildren(h("div", { class: "empty-state" }, text));
   }
 
-  // ---------------------------------------------------------------- chat list
-  async loadShortcuts() {
-    try {
-      this.shortcuts = await api("/api/telegram/shortcuts");
-    } catch (e) {
-      this.shortcutList.replaceChildren(h("li", { class: "chat-item error" }, e.message));
-      return;
-    }
-    this.renderShortcuts();
-  }
-
-  renderShortcuts() {
-    if (!this.shortcuts.length) {
-      this.shortcutList.replaceChildren(h("li", { class: "chat-item muted" }, "No channels in _config/channels.json"));
-      return;
-    }
-    this.shortcutList.replaceChildren(...this.shortcuts.map((s) => this.chatItem({
-      id: s.chat_id, name: s.name, photo: s.photo, label: s.label, preview: s.error ? `Not found: ${s.error}` : "",
-    })));
-  }
-
-  async loadDialogs(more) {
-    this.moreButton.disabled = true;
-    try {
-      const last = more ? this.dialogs[this.dialogs.length - 1] : null;
-      const query = last && last.date ? `?offset_date=${encodeURIComponent(last.date)}` : "";
-      const page = await api(`/api/telegram/dialogs${query}`);
-      if (more) {
-        for (const d of page) if (!this.dialogs.some((x) => x.id === d.id)) this.dialogs.push(d);
-      } else {
-        // First page replaces the top of the list; chats loaded with "Load more" stay below it
-        const ids = new Set(page.map((d) => d.id));
-        this.dialogs = page.concat(this.dialogs.filter((d) => !ids.has(d.id)));
-      }
-      this.moreButton.hidden = more && page.length === 0;
-      this.renderDialogs();
-    } catch (e) {
-      this.dialogList.replaceChildren(h("li", { class: "chat-item error" }, e.message));
-    } finally {
-      this.moreButton.disabled = false;
-    }
-  }
-
-  renderDialogs() {
-    this.dialogList.replaceChildren(...this.dialogs.map((d) => this.chatItem(d)));
-  }
-
-  chatItem({ id, name, photo, label, preview, date, unread, unread_reactions }) {
-    const active = this.chat && this.chat.id === id;
-    return h("li", {
-      class: "chat-item" + (active ? " active" : ""),
-      "data-chat": id,
-      onclick: () => { if (id) location.hash = `#/telegram/${id}`; },
-    },
-      avatar(name, id, photo),
-      h("div", { class: "chat-text" },
-        h("div", { class: "chat-line" },
-          h("span", { class: "chat-name", dir: "auto" }, name),
-          date ? h("span", { class: "chat-time" }, listTime(date)) : null),
-        h("div", { class: "chat-line" },
-          label ? h("span", { class: "chat-label" }, label) : null,
-          h("span", { class: "chat-preview", dir: "auto" }, preview || ""),
-          unread_reactions ? h("span", {
-            class: "reaction-badge",
-            title: `${unread_reactions} new reaction${unread_reactions > 1 ? "s" : ""} to your messages`,
-          }, unread_reactions > 1 ? `♥ ${unread_reactions}` : "♥") : null,
-          unread ? h("span", { class: "unread" }, unread) : null)));
-  }
-
-  highlightActive() {
-    for (const item of this.root.querySelectorAll(".chat-item[data-chat]")) {
-      item.classList.toggle("active", !!this.chat && Number(item.dataset.chat) === this.chat.id);
-    }
-  }
-
-  knownName(id) {
-    const match = this.dialogs.find((d) => d.id === id) || this.shortcuts.find((s) => s.chat_id === id);
-    return match ? match.name : null;
-  }
-
-  setChatTitle(name, details, photo) {
-    const id = this.chat ? this.chat.id : null;
-    this.chatTitle.replaceChildren(
-      id ? avatar(name, id, photo, "small") : "",
-      h("div", { class: "title-text" }, h("strong", { dir: "auto" }, name), details ? h("small", {}, details) : null));
-  }
-
-  // ---------------------------------------------------------------- open chat
-  async openChat(id) {
-    if (this.unavailable) return;
-    this.root.classList.toggle("show-chat", !!id);
-    if (!id) {
-      this.chat = null;
-      this.highlightActive();
-      this.setChatTitle("Telegram");
-      this.messagesBox.replaceChildren(h("div", { class: "empty-state" }, "Choose a chat to read it here."));
-      return;
-    }
-    if (this.chat && this.chat.id === id) return;
-
+  /** Loads a chat's newest messages; with msgId, highlights that one. Returns the chat's info, or
+   *  null if loading failed or another chat was opened meanwhile. */
+  async open(id, msgId = null) {
     // reactorLists: message ID -> everyone who reacted, once "Who reacted" was clicked
     const chat = { id, info: null, messages: new Map(), reactorLists: new Map(), noOlder: false };
     this.chat = chat;
-    this.highlightActive();
-    this.setChatTitle(this.knownName(id) || "Loading...");
-    this.messagesBox.replaceChildren(h("div", { class: "empty-state" }, "Loading messages..."));
-
+    this.single = null;
+    this.box.replaceChildren(h("div", { class: "empty-state" }, "Loading messages..."));
     try {
       const [info, messages] = await Promise.all([
         api(`/api/telegram/chats/${id}`),
         api(`/api/telegram/chats/${id}/messages`),
       ]);
-      if (this.chat !== chat) return; // another chat was opened meanwhile
+      if (this.chat !== chat) return null;
       chat.info = info;
       chat.noOlder = messages.length < PAGE_SIZE;
-      this.renderChatTitle();
       this.addMessages(messages);
-      this.renderMessages({ scroll: "bottom" });
+      this.render({ scroll: "bottom" });
+      if (msgId) this.showMessage(msgId);
+      return info;
     } catch (e) {
-      if (this.chat === chat) this.messagesBox.replaceChildren(h("div", { class: "empty-state error" }, e.message));
+      if (this.chat === chat) this.box.replaceChildren(h("div", { class: "empty-state error" }, e.message));
+      return null;
     }
   }
 
-  renderChatTitle() {
-    const { info } = this.chat;
-    const details = [info.kind, info.username ? "@" + info.username : null].filter(Boolean).join(" · ");
-    this.setChatTitle(info.name, details, info.photo);
+  /** Shows only one message of a chat (a published post); live updates keep it current. */
+  async openMessage(id, msgId) {
+    const chat = { id, info: null, messages: new Map(), reactorLists: new Map(), noOlder: true };
+    this.chat = chat;
+    this.single = msgId;
+    this.box.replaceChildren(h("div", { class: "empty-state" }, "Loading..."));
+    try {
+      const [info, message] = await Promise.all([
+        api(`/api/telegram/chats/${id}`),
+        api(`/api/telegram/chats/${id}/messages/${msgId}`),
+      ]);
+      if (this.chat !== chat) return null;
+      chat.info = info;
+      this.addMessages([message]);
+      this.render({});
+      return info;
+    } catch (e) {
+      if (this.chat === chat) this.box.replaceChildren(h("div", { class: "empty-state error" }, e.message));
+      return null;
+    }
+  }
+
+  showMessage(msgId) {
+    const el = [...this.box.querySelectorAll(".msg[data-ids]")]
+      .find((m) => m.dataset.ids.split(",").map(Number).includes(msgId));
+    if (!el) return false;
+    el.scrollIntoView({ block: "center" });
+    el.classList.add("flash");
+    setTimeout(() => el.classList.remove("flash"), 2500);
+    return true;
   }
 
   addMessages(messages) {
@@ -374,30 +296,31 @@ class TelegramView {
     const chat = this.chat;
     button.disabled = true;
     const oldest = Math.min(...chat.messages.keys());
-    const fromBottom = this.messagesBox.scrollHeight - this.messagesBox.scrollTop;
+    const fromBottom = this.box.scrollHeight - this.box.scrollTop;
     try {
       const messages = await api(`/api/telegram/chats/${chat.id}/messages?offset_id=${oldest}`);
       if (this.chat !== chat) return;
       if (messages.length < PAGE_SIZE) chat.noOlder = true;
       this.addMessages(messages);
-      this.renderMessages({ fromBottom });
+      this.render({ fromBottom });
     } catch (e) {
       button.disabled = false;
       button.textContent = `Couldn't load: ${e.message}. Try again`;
     }
   }
 
-  /** Reloads the newest page of the open chat (new messages, or the reload button). */
-  async reloadChat() {
+  /** Reloads the newest page (new messages, or the reload button). Stays at the bottom if it was there. */
+  async reload() {
     const chat = this.chat;
     if (!chat || !chat.info) return;
-    const box = this.messagesBox;
+    if (this.single) return this.refreshMessages([this.single]); // e.g. new view counts
+    const box = this.box;
     const wasAtBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
     try {
       const messages = await api(`/api/telegram/chats/${chat.id}/messages`);
       if (this.chat !== chat) return;
       this.addMessages(messages);
-      this.renderMessages(wasAtBottom ? { scroll: "bottom" } : { scrollTop: box.scrollTop });
+      this.render(wasAtBottom ? { scroll: "bottom" } : { scrollTop: box.scrollTop });
     } catch {
       /* the next update or the reload button tries again */
     }
@@ -420,7 +343,7 @@ class TelegramView {
         /* deleted meanwhile, or a temporary error: the reload button fetches it again */
       }
     }
-    if (changed && this.chat === chat) this.renderMessages({ scrollTop: this.messagesBox.scrollTop });
+    if (changed && this.chat === chat) this.render({ scrollTop: this.box.scrollTop });
   }
 
   async loadReactors(msgId, button) {
@@ -430,16 +353,16 @@ class TelegramView {
       const reactors = await api(`/api/telegram/chats/${chat.id}/messages/${msgId}/reactions`);
       if (this.chat !== chat) return;
       chat.reactorLists.set(msgId, reactors);
-      this.renderMessages({ scrollTop: this.messagesBox.scrollTop });
+      this.render({ scrollTop: this.box.scrollTop });
     } catch (e) {
       button.disabled = false;
       button.textContent = `Couldn't load: ${e.message}`;
     }
   }
 
-  renderMessages(position) {
+  render(position) {
     const chat = this.chat;
-    const box = this.messagesBox;
+    const box = this.box;
     const sorted = [...chat.messages.values()].sort((a, b) => a.id - b.id);
     const nodes = [];
 
@@ -503,26 +426,46 @@ class TelegramView {
       parts.push(text);
     }
 
-    const withReactions = group.find((m) => m.reactions);
-    if (withReactions) parts.push(this.reactionsBlock(withReactions));
+    // Reactions belong to one message of an album: the one that has them, else the one with the text
+    const target = group.find((m) => m.reactions) || withText;
+    if (target.reactions) parts.push(this.reactionsBlock(target));
+    if (this.pickerFor === target.id) parts.push(this.reactionPicker(target));
+    if (this.reactError && this.reactError.msgId === target.id) {
+      parts.push(h("div", { class: "react-error error small" }, this.reactError.text));
+    }
 
     const meta = [];
     if (withText.views !== null && withText.views !== undefined) meta.push(`👁 ${compactNumber.format(withText.views)}`);
     if (withText.edit_date) meta.push("edited");
     meta.push(timeFormat.format(new Date(first.date)));
-    parts.push(h("div", { class: "meta" }, meta.join(" · ")));
+    parts.push(h("div", { class: "meta" },
+      h("button", {
+        class: "react-btn" + (this.pickerFor === target.id ? " open" : ""), title: "React",
+        onclick: () => this.togglePicker(target.id),
+      }, "☺+"),
+      h("span", {}, meta.join(" · "))));
 
     const isOut = first.out && kind !== "channel";
-    return h("div", { class: "msg" + (isOut ? " out" : ""), "data-id": first.id }, h("div", { class: "bubble" }, parts));
+    const selected = group.some((m) => this.selected.has(m.id));
+    return h("div", {
+      class: "msg" + (isOut ? " out" : "") + (selected ? " selected" : ""),
+      "data-id": first.id,
+      "data-ids": group.map((m) => m.id).join(","),
+    }, h("div", { class: "bubble" }, parts));
   }
 
   /** Reaction counts, then who reacted (recent reactors, or everyone after "Who reacted"). */
   reactionsBlock(msg) {
     const { results, recent, can_see_list } = msg.reactions;
+    // Like in Telegram, tapping a reaction adds it, and tapping your own removes it
     const block = h("div", { class: "reactions-block" },
       h("div", { class: "reactions" }, results.map((r) =>
-        h("span", { class: "reaction" + (r.mine ? " mine" : ""), title: r.mine ? "Your reaction" : null },
-          reactionIcon(r), ` ${r.count}`))));
+        h("button", {
+          class: "reaction" + (r.mine ? " mine" : ""),
+          title: r.paid ? "Paid reaction" : r.mine ? "Your reaction: tap to remove" : "Tap to react with this",
+          disabled: r.paid,
+          onclick: () => this.toggleReaction(msg, r),
+        }, reactionIcon(r), ` ${r.count}`))));
 
     const everyone = this.chat.reactorLists.get(msg.id);
     const people = everyone || recent;
@@ -540,20 +483,343 @@ class TelegramView {
     return block;
   }
 
+  // ---------------------------------------------------------------- reacting
+  /** Opens or closes the reaction picker under a message; the chat's menu is loaded the first time. */
+  async togglePicker(msgId) {
+    const chat = this.chat;
+    this.pickerFor = this.pickerFor === msgId ? null : msgId;
+    this.pickerExpanded = false;
+    this.reactError = null;
+    this.render({ scrollTop: this.box.scrollTop });
+    if (this.pickerFor && (!chat.reactionMenu || chat.reactionMenu.error)) {
+      try {
+        chat.reactionMenu = await api(`/api/telegram/chats/${chat.id}/reaction-menu`);
+      } catch (e) {
+        chat.reactionMenu = { error: e.message };
+      }
+      if (this.chat === chat) this.render({ scrollTop: this.box.scrollTop });
+    }
+  }
+
+  reactionPicker(msg) {
+    const menu = this.chat.reactionMenu;
+    const note = (text, cls = "muted") => h("div", { class: `reaction-picker ${cls} small` }, text);
+    if (!menu) return note("Loading reactions...");
+    if (menu.error) return note(menu.error, "error");
+    if (menu.allowed === "none") return note("Reactions are turned off in this chat.");
+
+    const choice = (r) => h("button", { class: "reaction-choice", onclick: () => this.toggleReaction(msg, r) }, reactionIcon(r));
+    const recent = menu.recent.length ? menu.recent : menu.all.slice(0, 8);
+    const picker = h("div", { class: "reaction-picker" },
+      menu.recent.length ? h("div", { class: "picker-label" }, "Recent") : null,
+      h("div", { class: "reaction-row" }, recent.map(choice)));
+    if (this.pickerExpanded) {
+      picker.append(h("div", { class: "picker-label" }, "All"), h("div", { class: "reaction-row" }, menu.all.map(choice)));
+    } else if (menu.all.length > recent.length) {
+      picker.append(h("button", { class: "link-btn small", onclick: () => {
+        this.pickerExpanded = true;
+        this.render({ scrollTop: this.box.scrollTop });
+      } }, "More"));
+    }
+    return picker;
+  }
+
+  /** Reacts with `reaction`, or removes it when it is already yours. One reaction per message: a new one replaces yours. */
+  toggleReaction(msg, reaction) {
+    const same = (a, b) => (a.emoji || null) === (b.emoji || null) && (a.custom_emoji_id || null) === (b.custom_emoji_id || null);
+    const isMine = msg.reactions && msg.reactions.results.some((r) => r.mine && same(r, reaction));
+    const chosen = isMine ? [] : [reaction.custom_emoji_id ? { custom_emoji_id: reaction.custom_emoji_id } : { emoji: reaction.emoji }];
+    return this.react(msg.id, chosen);
+  }
+
+  async react(msgId, reactions) {
+    const chat = this.chat;
+    this.pickerFor = null;
+    this.reactError = null;
+    try {
+      const updated = await api(`/api/telegram/chats/${chat.id}/messages/${msgId}/reaction`, { json: { reactions } });
+      if (this.chat !== chat) return;
+      chat.messages.set(msgId, updated);
+      chat.reactorLists.delete(msgId); // "Who reacted" loads the new list when tapped again
+      chat.reactionMenu = null; // your recent reactions changed
+    } catch (e) {
+      this.reactError = { msgId, text: e.message };
+    }
+    if (this.chat === chat) this.render({ scrollTop: this.box.scrollTop });
+  }
+
+  /** Applies a live update from /api/events if it concerns this chat. */
+  onUpdate(update) {
+    // Deletions in private chats and small groups arrive without a chat ID
+    const isOpen = this.chat && (this.chat.id === update.chat_id || (update.chat_id === null && update.type === "deleted"));
+    if (!isOpen) return;
+    if (update.type === "new") {
+      if (this.single) return; // showing one message only; newer ones don't belong here
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = setTimeout(() => this.reload(), 400);
+    } else if (update.type === "deleted") {
+      for (const id of update.ids) this.chat.messages.delete(id);
+      if (this.chat.info) this.render({ scrollTop: this.box.scrollTop });
+    } else {
+      this.refreshMessages(update.ids); // edited, or reactions changed
+    }
+  }
+}
+
+class TelegramView {
+  constructor() {
+    this.dialogs = [];
+    this.shortcuts = [];
+    this.dialogTimer = null;
+    // Select mode: tapping messages picks them as the source of a new post. It is on by default;
+    // turning it off (to open photos and links) lasts until the page is reloaded.
+    this.selecting = app.selectMode !== false;
+    this.selected = new Set();
+  }
+
+  mount() {
+    const view = viewRoot();
+    if (!telegramReady()) {
+      this.unavailable = true;
+      const state = app.status ? app.status.telegram.state : "offline";
+      view.replaceChildren(h("div", { class: "page" }, h("div", { class: "card" },
+        h("h2", {}, "Telegram"),
+        state === "connecting"
+          ? h("p", { class: "muted" }, "Connecting to Telegram...")
+          : h("p", {}, "Telegram isn't connected yet. ", h("a", { href: "#/setup" }, "Open Setup"), " to log in."))));
+      return;
+    }
+
+    this.shortcutList = h("ul", { class: "chat-items" });
+    this.dialogList = h("ul", { class: "chat-items" });
+    this.moreButton = h("button", { class: "btn", onclick: () => this.loadDialogs(true) }, "Load more chats");
+    const list = h("aside", { class: "tg-list" },
+      h("div", { class: "tg-section-title" }, "Shortcuts"), this.shortcutList,
+      h("div", { class: "tg-section-title" }, "Chats"), this.dialogList,
+      h("div", { class: "list-footer" }, this.moreButton));
+
+    this.chatTitle = h("div", { class: "title" });
+    const messagesBox = h("div", { class: "messages" });
+    this.pane = new ChatPane(messagesBox, { selected: this.selected });
+    // In select mode a tap selects the message instead of following links or opening photos.
+    // Buttons inside a message (e.g. "Who reacted") keep working.
+    messagesBox.addEventListener("click", (event) => {
+      if (!this.selecting || event.target.closest("button")) return;
+      const msg = event.target.closest(".msg[data-ids]");
+      if (!msg) return;
+      event.preventDefault();
+      this.toggleSelected(msg.dataset.ids.split(",").map(Number));
+    }, true);
+    this.selectButton = h("button", { class: "btn select-btn", onclick: () => this.setSelecting(!this.selecting) });
+    this.selectBar = h("div", { class: "select-bar", hidden: true });
+    const chatPane = h("section", { class: "tg-chat" },
+      h("header", { class: "chat-head" },
+        h("button", { class: "icon-btn back", title: "Back to chats", onclick: () => { location.hash = "#/telegram"; } }, "←"),
+        this.chatTitle,
+        this.selectButton,
+        h("button", { class: "icon-btn", title: "Reload messages", onclick: () => this.pane.reload() }, "⟳")),
+      messagesBox,
+      this.selectBar);
+
+    this.root = h("div", { class: "tg" }, list, chatPane);
+    view.replaceChildren(this.root);
+    this.renderSelectButton();
+    this.loadShortcuts();
+    this.loadDialogs(false);
+  }
+
+  // ---------------------------------------------------------------- chat list
+  async loadShortcuts() {
+    try {
+      this.shortcuts = await api("/api/telegram/shortcuts");
+    } catch (e) {
+      this.shortcutList.replaceChildren(h("li", { class: "chat-item error" }, e.message));
+      return;
+    }
+    this.renderShortcuts();
+  }
+
+  renderShortcuts() {
+    if (!this.shortcuts.length) {
+      this.shortcutList.replaceChildren(h("li", { class: "chat-item muted" }, "No channels in _config/channels.json"));
+      return;
+    }
+    this.shortcutList.replaceChildren(...this.shortcuts.map((s) => this.chatItem({
+      id: s.chat_id, name: s.name, photo: s.photo, label: s.label, preview: s.error ? `Not found: ${s.error}` : "",
+    })));
+  }
+
+  async loadDialogs(more) {
+    this.moreButton.disabled = true;
+    try {
+      const last = more ? this.dialogs[this.dialogs.length - 1] : null;
+      const query = last && last.date ? `?offset_date=${encodeURIComponent(last.date)}` : "";
+      const page = await api(`/api/telegram/dialogs${query}`);
+      if (more) {
+        for (const d of page) if (!this.dialogs.some((x) => x.id === d.id)) this.dialogs.push(d);
+      } else {
+        // First page replaces the top of the list; chats loaded with "Load more" stay below it
+        const ids = new Set(page.map((d) => d.id));
+        this.dialogs = page.concat(this.dialogs.filter((d) => !ids.has(d.id)));
+      }
+      this.moreButton.hidden = more && page.length === 0;
+      this.renderDialogs();
+    } catch (e) {
+      this.dialogList.replaceChildren(h("li", { class: "chat-item error" }, e.message));
+    } finally {
+      this.moreButton.disabled = false;
+    }
+  }
+
+  renderDialogs() {
+    this.dialogList.replaceChildren(...this.dialogs.map((d) => this.chatItem(d)));
+  }
+
+  chatItem({ id, name, photo, label, preview, date, unread, unread_reactions }) {
+    const active = this.pane.id === id;
+    return h("li", {
+      class: "chat-item" + (active ? " active" : ""),
+      "data-chat": id,
+      onclick: () => { if (id) location.hash = `#/telegram/${id}`; },
+    },
+      avatar(name, id, photo),
+      h("div", { class: "chat-text" },
+        h("div", { class: "chat-line" },
+          h("span", { class: "chat-name", dir: "auto" }, name),
+          date ? h("span", { class: "chat-time" }, listTime(date)) : null),
+        h("div", { class: "chat-line" },
+          label ? h("span", { class: "chat-label" }, label) : null,
+          h("span", { class: "chat-preview", dir: "auto" }, preview || ""),
+          unread_reactions ? h("span", {
+            class: "reaction-badge",
+            title: `${unread_reactions} new reaction${unread_reactions > 1 ? "s" : ""} to your messages`,
+          }, unread_reactions > 1 ? `♥ ${unread_reactions}` : "♥") : null,
+          unread ? h("span", { class: "unread" }, unread) : null)));
+  }
+
+  highlightActive() {
+    for (const item of this.root.querySelectorAll(".chat-item[data-chat]")) {
+      item.classList.toggle("active", Number(item.dataset.chat) === this.pane.id);
+    }
+  }
+
+  knownName(id) {
+    const match = this.dialogs.find((d) => d.id === id) || this.shortcuts.find((s) => s.chat_id === id);
+    return match ? match.name : null;
+  }
+
+  setChatTitle(name, details, photo) {
+    const id = this.pane.id;
+    this.chatTitle.replaceChildren(
+      id ? avatar(name, id, photo, "small") : "",
+      h("div", { class: "title-text" }, h("strong", { dir: "auto" }, name), details ? h("small", {}, details) : null));
+  }
+
+  renderChatTitle() {
+    const info = this.pane.info;
+    const details = [info.kind, info.username ? "@" + info.username : null].filter(Boolean).join(" · ");
+    this.setChatTitle(info.name, details, info.photo);
+  }
+
+  // ---------------------------------------------------------------- open chat
+  /** Opens a chat; with msgId, scrolls to that message and highlights it (links from the post page). */
+  async openChat(id, msgId = null) {
+    if (this.unavailable) return;
+    this.root.classList.toggle("show-chat", !!id);
+    if (!id) {
+      this.pane.clear("Choose a chat to read it here.");
+      this.clearSelection();
+      this.highlightActive();
+      this.setChatTitle("Telegram");
+      return;
+    }
+    if (this.pane.id === id) {
+      if (msgId) this.pane.showMessage(msgId);
+      return;
+    }
+
+    const opening = this.pane.open(id, msgId);
+    this.clearSelection();
+    this.highlightActive();
+    this.setChatTitle(this.knownName(id) || "Loading...");
+    if (await opening) this.renderChatTitle();
+  }
+
+  // ---------------------------------------------------------------- select mode
+  setSelecting(on) {
+    this.selecting = on;
+    app.selectMode = on;
+    this.clearSelection();
+  }
+
+  /** Unselects everything, keeping select mode as it is (e.g. when another chat is opened). */
+  clearSelection() {
+    this.selected.clear();
+    if (!this.root) return;
+    this.renderSelectButton();
+    if (this.pane.info) this.pane.render({ scrollTop: this.pane.box.scrollTop });
+    this.renderSelectBar();
+  }
+
+  renderSelectButton() {
+    const on = this.selecting;
+    this.root.classList.toggle("selecting", on);
+    this.selectButton.hidden = !this.pane.id;
+    this.selectButton.classList.toggle("on", on);
+    this.selectButton.setAttribute("aria-pressed", String(on));
+    this.selectButton.textContent = on ? "Select ✓" : "Select";
+    this.selectButton.title = on
+      ? "Select mode is on: tap messages to pick them for a new post. Click to turn it off and open photos and links."
+      : "Turn on select mode to pick messages for a new post.";
+  }
+
+  toggleSelected(ids) {
+    const allSelected = ids.every((id) => this.selected.has(id));
+    for (const id of ids) {
+      if (allSelected) this.selected.delete(id);
+      else this.selected.add(id);
+    }
+    for (const el of this.pane.box.querySelectorAll(".msg[data-ids]")) {
+      el.classList.toggle("selected", el.dataset.ids.split(",").some((id) => this.selected.has(Number(id))));
+    }
+    this.renderSelectBar();
+  }
+
+  selectedMessages() {
+    return [...this.selected].sort((a, b) => a - b).map((id) => this.pane.chat.messages.get(id)).filter(Boolean);
+  }
+
+  /** The bar with "Start post", shown once something is selected. */
+  renderSelectBar() {
+    const messages = this.selecting ? this.selectedMessages() : [];
+    this.selectBar.hidden = !messages.length;
+    if (!messages.length) return;
+    const photos = messages.filter((m) => m.source_photo).length;
+    this.selectBar.replaceChildren(
+      h("span", { class: "select-summary" },
+        `${messages.length} message${messages.length > 1 ? "s" : ""}, ${photos} photo${photos === 1 ? "" : "s"}`),
+      h("button", { class: "btn", onclick: () => this.clearSelection() }, "Clear"),
+      h("button", { class: "btn primary", onclick: () => this.startPost() }, "Start post"));
+  }
+
+  /** Hands the selected messages to the New post page: texts in chat order, photos as choices. */
+  startPost() {
+    const messages = this.selectedMessages();
+    const chatId = this.pane.id;
+    app.draft = {
+      text: messages.map((m) => m.text.trim()).filter(Boolean).join("\n\n"),
+      photos: messages.filter((m) => m.source_photo).map((m) => ({ chat_id: chatId, msg_id: m.id })),
+      source: this.pane.info ? this.pane.info.name : "",
+    };
+    app.draft.chosen = app.draft.photos.length ? { type: "telegram", ...app.draft.photos[0] } : null;
+    this.clearSelection();
+    location.hash = "#/post/new";
+  }
+
   // ---------------------------------------------------------------- live updates
   onUpdate(update) {
     if (this.unavailable) return;
-    // Deletions in private chats and small groups arrive without a chat ID
-    const isOpen = this.chat && (this.chat.id === update.chat_id || (update.chat_id === null && update.type === "deleted"));
-    if (isOpen && update.type === "new") {
-      clearTimeout(this.reloadTimer);
-      this.reloadTimer = setTimeout(() => this.reloadChat(), 400);
-    } else if (isOpen && update.type === "deleted") {
-      for (const id of update.ids) this.chat.messages.delete(id);
-      this.renderMessages({ scrollTop: this.messagesBox.scrollTop });
-    } else if (isOpen) {
-      this.refreshMessages(update.ids); // edited, or reactions changed
-    }
+    this.pane.onUpdate(update);
     clearTimeout(this.dialogTimer);
     this.dialogTimer = setTimeout(() => this.loadDialogs(false), 1500);
   }
@@ -690,7 +956,12 @@ function systemCard(status) {
 function startLiveUpdates() {
   const source = new EventSource("/api/events");
   source.onmessage = (event) => {
-    if (app.view instanceof TelegramView) app.view.onUpdate(JSON.parse(event.data));
+    const update = JSON.parse(event.data);
+    if (update.type === "job") {
+      if (app.view instanceof PostView) app.view.onJob(update.job);
+    } else if (app.view instanceof TelegramView || app.view instanceof PostView) {
+      app.view.onUpdate(update); // the post page shows the review chat
+    }
   };
 }
 
@@ -698,17 +969,21 @@ async function watchStatus() {
   const before = app.status ? app.status.telegram.state : null;
   await refreshStatus();
   const after = app.status ? app.status.telegram.state : null;
-  // When Telegram becomes ready (or drops), rebuild the viewer
-  if (before !== after && currentRoute().page === "telegram") {
+  if (before === after) return;
+  // When Telegram becomes ready (or drops), rebuild the viewer, or update the post's publish buttons
+  if (currentRoute().page === "telegram") {
     app.view = null;
     route();
+  } else if (app.view instanceof PostView) {
+    app.view.onTelegramStatus();
   }
 }
 
-(async function start() {
+// Runs after every deferred script (app.js, posts.js) has loaded
+document.addEventListener("DOMContentLoaded", async () => {
   await refreshStatus();
   window.addEventListener("hashchange", route);
   await route();
   startLiveUpdates();
   setInterval(watchStatus, 5000);
-})();
+});

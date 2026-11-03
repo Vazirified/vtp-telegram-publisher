@@ -7,7 +7,7 @@ import asyncio
 from telethon import events, functions, types, utils
 from telethon.errors import (
     SessionPasswordNeededError, PhoneNumberInvalidError, PhoneCodeInvalidError,
-    PhoneCodeExpiredError, PasswordHashInvalidError, FloodWaitError,
+    PhoneCodeExpiredError, PasswordHashInvalidError, FloodWaitError, RPCError,
 )
 from telethon.extensions import html as telegram_html
 from telethon.tl.types import MessageService
@@ -48,6 +48,12 @@ def has_preview_image(msg):
     if msg.document and msg.document.thumbs:
         return True
     return bool(msg.web_preview and msg.web_preview.photo)
+
+def is_source_photo(msg):
+    """True if the message holds a full photo (or image file) that can be a post's raw image."""
+    if msg.photo:
+        return True
+    return bool(msg.document and not msg.sticker and msg.file and (msg.file.mime_type or "").startswith("image/"))
 
 def largest_size(sizes):
     """[width, height] of the largest photo size or thumbnail that has dimensions, or None."""
@@ -125,6 +131,9 @@ def message_to_dict(msg, names=None):
         "sender": sender,
         # Telegram HTML; the browser rebuilds it from an allowlist of tags before showing it
         "html": telegram_html.unparse(msg.message, msg.entities) if msg.message else "",
+        # Plain text, used as the source text when a post is started from selected messages
+        "text": msg.message or "",
+        "source_photo": is_source_photo(msg),
         "media": media_label(msg),
         "file_name": msg.file.name if msg.document and msg.file else None,
         "has_image": has_preview_image(msg),
@@ -158,6 +167,8 @@ class TelegramService:
         self.subscribers = set()
         self.download_locks = {}
         self.peer_names = {}  # marked peer ID -> display name, for reaction lists
+        self.reaction_rules = {}  # marked chat ID -> which reactions the chat allows
+        self.standard_reaction_list = None  # Telegram's standard emoji reactions, loaded once
 
     # ---------------------------------------------------------------- lifecycle
     async def start(self):
@@ -357,6 +368,82 @@ class TelegramService:
                                  date=r.date.isoformat(), unread=bool(r.unread), mine=bool(r.my)))
         return reactors
 
+    # ---------------------------------------------------------------- reacting
+    async def chat_reaction_rules(self, chat_id):
+        """("all" | "some" | "none", custom emoji allowed, [allowed reactions when "some"]), cached per chat."""
+        if chat_id in self.reaction_rules:
+            return self.reaction_rules[chat_id]
+        entity = await self.client.get_entity(chat_id)
+        if isinstance(entity, types.User):
+            rules = ("all", True, [])
+        else:
+            if isinstance(entity, types.Channel):
+                full = await self.client(functions.channels.GetFullChannelRequest(entity))
+            else:
+                full = await self.client(functions.messages.GetFullChatRequest(entity.id))
+            available = full.full_chat.available_reactions
+            if isinstance(available, types.ChatReactionsSome):
+                rules = ("some", True, [reaction_to_dict(r) for r in available.reactions])
+            elif isinstance(available, types.ChatReactionsNone):
+                rules = ("none", False, [])
+            else:  # ChatReactionsAll, or not set (Telegram's default is all)
+                rules = ("all", bool(getattr(available, "allow_custom", False)), [])
+        self.reaction_rules[chat_id] = rules
+        return rules
+
+    async def standard_reactions(self):
+        """Telegram's standard emoji reactions this account may use (Premium-only ones need Premium)."""
+        if self.standard_reaction_list is None:
+            premium = bool(getattr(self.me, "premium", False))
+            result = await self.client(functions.messages.GetAvailableReactionsRequest(hash=0))
+            self.standard_reaction_list = [{"emoji": r.reaction} for r in result.reactions
+                                           if not r.inactive and (premium or not r.premium)]
+        return self.standard_reaction_list
+
+    async def reaction_menu(self, chat_id):
+        """What the reaction picker offers in a chat.
+
+        Returns {"allowed": "all" | "some" | "none", "recent": [...], "all": [...]}; "recent" is the
+        account's recently used reactions (the same list the Telegram apps show), limited to what
+        this chat allows.
+        """
+        allowed, custom_ok, some = await self.chat_reaction_rules(chat_id)
+        if allowed == "none":
+            return {"allowed": "none", "recent": [], "all": []}
+        premium = bool(getattr(self.me, "premium", False))
+        everything = some if allowed == "some" else await self.standard_reactions()
+
+        def usable(reaction):
+            if reaction.get("paid"):
+                return False
+            if reaction.get("custom_emoji_id"):
+                return premium and custom_ok and (allowed == "all" or reaction in some)
+            return allowed == "all" or reaction in some
+
+        result = await self.client(functions.messages.GetRecentReactionsRequest(limit=30, hash=0))
+        recent = [r for r in (reaction_to_dict(x) for x in getattr(result, "reactions", [])) if usable(r)]
+        return {"allowed": allowed, "recent": recent[:12], "all": [r for r in everything if usable(r)]}
+
+    async def send_reaction(self, chat_id, msg_id, reactions):
+        """Sets your reaction(s) on a message; an empty list removes yours. Returns the updated message."""
+        reaction = [types.ReactionCustomEmoji(document_id=int(r["custom_emoji_id"])) if r.get("custom_emoji_id")
+                    else types.ReactionEmoji(emoticon=r["emoji"]) for r in reactions]
+        peer = await self.client.get_input_entity(chat_id)
+        try:
+            await self.client(functions.messages.SendReactionRequest(
+                peer=peer, msg_id=msg_id, reaction=reaction, add_to_recent=True))
+        except RPCError as e:
+            if "REACTION_INVALID" in str(e):
+                raise ValueError("This chat doesn't allow that reaction.")
+            if "REACTIONS_TOO_MANY" in str(e) or "PREMIUM" in str(e):
+                raise ValueError("Your account can't add more reactions to this message.")
+            raise
+        return await self.get_message(chat_id, msg_id)
+
+    async def delete_messages(self, chat_id, msg_ids):
+        """Deletes messages for everyone (used for VTP's own previews once a post is published)."""
+        await self.client.delete_messages(chat_id, msg_ids, revoke=True)
+
     async def resolve_shortcuts(self, targets):
         """Resolves [(label, target)] from channels.json to chats the viewer can open."""
         shortcuts, seen = [], set()
@@ -423,6 +510,16 @@ class TelegramService:
             return await self.client.download_profile_photo(entity, file=target, download_big=False)
 
         return await self.cached_download(f"avatar_{chat_id}_{photo_id}", download)
+
+    async def download_source_photo(self, chat_id, msg_id, target):
+        """Downloads a message's full photo to `target` (Telethon adds the extension) and returns the path."""
+        msg = await self.client.get_messages(chat_id, ids=msg_id)
+        if not msg or not is_source_photo(msg):
+            raise ValueError("This message has no photo.")
+        path = await self.client.download_media(msg, file=target)
+        if not path:
+            raise ValueError("Telegram didn't return the photo. Try again.")
+        return path
 
     async def custom_emoji_image(self, document_id):
         """A still image of a custom emoji (used for custom emoji reactions), or None."""

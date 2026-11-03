@@ -21,7 +21,10 @@ from common import (
     load_channels_config, load_gemini_credentials, save_gemini_credentials, list_gemini_models,
 )
 import image_engine
+import publisher
+import pipeline_service
 from publisher import parse_target
+from pipeline_service import PostError, PostNotFound
 from telegram_service import TelegramService, clean_web_cache
 
 import uvicorn
@@ -29,7 +32,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 WEB_DIR = os.path.join(PROJECT_ROOT, "kernel", "web")
 FONTS_DIR = os.path.join(PROJECT_ROOT, "_config", "fonts")
@@ -40,7 +43,7 @@ DEFAULT_PORT = 8765
 ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 
 CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+    "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; "
     "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
 
@@ -49,6 +52,7 @@ telegram = TelegramService()
 @asynccontextmanager
 async def lifespan(app):
     clean_web_cache()
+    pipeline_service.clean_uploads()
     # Connecting can take a while (or time out when offline); the page loads meanwhile
     start_task = asyncio.create_task(telegram.start())
     yield
@@ -237,6 +241,27 @@ async def telegram_reactors(chat_id: int, msg_id: int):
     require_telegram()
     return await telegram_call(telegram.list_reactors(chat_id, msg_id))
 
+@app.get("/api/telegram/chats/{chat_id}/reaction-menu")
+async def telegram_reaction_menu(chat_id: int):
+    require_telegram()
+    return await telegram_call(telegram.reaction_menu(chat_id))
+
+class ReactionItem(BaseModel):
+    emoji: str | None = Field(None, max_length=16)
+    custom_emoji_id: str | None = Field(None, pattern=r"^\d{1,20}$")
+
+class ReactionBody(BaseModel):
+    reactions: list[ReactionItem] = Field(max_length=3)  # an empty list removes your reaction
+
+@app.post("/api/telegram/chats/{chat_id}/messages/{msg_id}/reaction")
+async def telegram_react(chat_id: int, msg_id: int, body: ReactionBody):
+    """Reacts to a message as your account (the one action in the viewer that changes Telegram)."""
+    require_telegram()
+    if any(not (r.emoji or r.custom_emoji_id) for r in body.reactions):
+        raise HTTPException(400, "Each reaction needs an emoji or a custom emoji ID.")
+    reactions = [r.model_dump(exclude_none=True) for r in body.reactions]
+    return await telegram_call(telegram.send_reaction(chat_id, msg_id, reactions))
+
 def image_response(path, missing_message):
     if not path or not os.path.exists(path):
         raise HTTPException(404, missing_message)
@@ -279,6 +304,234 @@ async def live_events(request: Request):
             telegram.unsubscribe(queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+# ==========================================
+# POSTS (THE PIPELINE)
+# ==========================================
+# Rendering writes the session's image files; one render at a time avoids two writers
+render_lock = asyncio.Lock()
+# Sending previews or live posts runs in the background: job ID -> state
+send_jobs = {}
+MAX_KEPT_JOBS = 50
+
+async def post_call(func, *args, **kwargs):
+    """Runs a pipeline_service function in a worker thread, turning its errors into HTTP errors."""
+    try:
+        return await run_in_threadpool(func, *args, **kwargs)
+    except PostError as e:
+        raise HTTPException(400, str(e))
+    except PostNotFound as e:
+        raise HTTPException(404, str(e))
+
+async def render_call(func, *args):
+    async with render_lock:
+        return await post_call(func, *args)
+
+async def detail_response(name):
+    """The post's details plus any send still running for it (e.g. after the page was reloaded)."""
+    detail = await post_call(pipeline_service.session_detail, name)
+    detail["jobs"] = [j for j in send_jobs.values() if j["session"] == name and j["status"] == "running"]
+    return detail
+
+@app.get("/api/gemini/models")
+async def gemini_models():
+    profile = load_gemini_credentials()
+    if not profile.get("gemini_api_key"):
+        return {"models": [], "last": None, "error": "No Gemini API key saved. Add one on the Setup page."}
+    try:
+        models = await run_in_threadpool(list_gemini_models, profile["gemini_api_key"])
+    except Exception as e:
+        return {"models": [], "last": profile.get("last_used_model"), "error": f"Couldn't list the models: {e}"}
+    return {"models": models, "last": profile.get("last_used_model"), "error": None}
+
+@app.post("/api/uploads")
+async def upload_photo(request: Request):
+    """The photo is the raw request body. Requiring an image content type also keeps other sites out."""
+    if not request.headers.get("content-type", "").startswith("image/"):
+        raise HTTPException(415, "Send the photo as the request body with an image/* content type.")
+    if int(request.headers.get("content-length") or 0) > pipeline_service.MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "The photo is larger than 30 MB.")
+    data = await request.body()
+    return {"token": await post_call(pipeline_service.save_upload, data)}
+
+class TelegramPhotoBody(BaseModel):
+    chat_id: int
+    msg_id: int
+
+@app.post("/api/uploads/telegram")
+async def upload_from_telegram(body: TelegramPhotoBody):
+    require_telegram()
+    path = await telegram_call(telegram.download_source_photo(body.chat_id, body.msg_id, pipeline_service.new_download_path()))
+    return {"token": await post_call(pipeline_service.adopt_download, path)}
+
+@app.get("/api/sessions")
+async def sessions_list():
+    return await post_call(pipeline_service.list_sessions)
+
+class NewPostBody(BaseModel):
+    text: str
+    image_token: str
+    model: str | None = None
+
+@app.post("/api/sessions")
+async def create_post(body: NewPostBody):
+    name = await post_call(pipeline_service.create_session, body.text, body.image_token, body.model)
+    return {"name": name}
+
+@app.get("/api/sessions/{name}")
+async def post_detail(name: str):
+    return await detail_response(name)
+
+@app.get("/api/sessions/{name}/files/{filename}")
+async def post_file(name: str, filename: str):
+    path = await post_call(pipeline_service.session_file, name, filename)
+    # URLs carry ?v=<modification time>, so a new render gets a new URL
+    return FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
+class TextBody(BaseModel):
+    headline: str
+    body: str
+
+@app.put("/api/sessions/{name}/texts/{lang}")
+async def save_post_text(name: str, lang: str, body: TextBody):
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await post_call(pipeline_service.write_text, session_dir, lang, body.headline, body.body)
+    return {"saved": True}
+
+class RenderBody(BaseModel):
+    aoi: list[float] | None = None
+    blur: int = pipeline_service.DEFAULT_BLUR
+
+@app.post("/api/sessions/{name}/render")
+async def render_post(name: str, body: RenderBody):
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await post_call(pipeline_service.set_render_options, session_dir, body.aoi, body.blur)
+    await render_call(pipeline_service.render_channels, session_dir)
+    return await detail_response(name)
+
+class OverrideBody(BaseModel):
+    headline: str | None = None
+    font_size: int | None = None
+
+@app.put("/api/sessions/{name}/channels/{channel}/override")
+async def override_channel(name: str, channel: str, body: OverrideBody):
+    """Image-only headline and font size for one channel; an empty body goes back to the text's headline."""
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await render_call(pipeline_service.set_override, session_dir, channel, body.headline, body.font_size)
+    return await detail_response(name)
+
+@app.post("/api/sessions/{name}/channels/{channel}/shrink")
+async def shrink_channel(name: str, channel: str):
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await render_call(pipeline_service.shrink_to_fit, session_dir, channel)
+    return await detail_response(name)
+
+@app.post("/api/sessions/{name}/channels/{channel}/shorten")
+async def shorten_channel(name: str, channel: str):
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await render_call(pipeline_service.shorten_with_gemini, session_dir, channel)
+    return await detail_response(name)
+
+class CaptionBody(BaseModel):
+    text: str
+
+@app.put("/api/sessions/{name}/captions/{channel}")
+async def save_post_caption(name: str, channel: str, body: CaptionBody):
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await post_call(pipeline_service.save_caption, session_dir, channel, body.text)
+    return {"saved": True}
+
+@app.post("/api/sessions/{name}/captions/{channel}/rebuild")
+async def rebuild_post_caption(name: str, channel: str):
+    session_dir = await post_call(pipeline_service.session_path, name)
+    await post_call(pipeline_service.rebuild_caption, session_dir, channel)
+    return await detail_response(name)
+
+class SendBody(BaseModel):
+    kind: str  # "previews" (to the review channel) or "published" (to the live channels)
+    channels: list[str]
+
+def job_update(job):
+    telegram.push({"type": "job", "job": job})
+
+async def run_send_job(job, session_dir):
+    config = load_channels_config()
+
+    def on_sent(channel, message):
+        pipeline_service.record_sent(session_dir, job["kind"], channel, message)
+        job["results"][channel] = ({"ok": True, "chat_id": message.chat_id, "msg_id": message.id}
+                                   if message else {"ok": False})
+        job_update(job)
+
+    try:
+        if job["kind"] == "previews":
+            await publisher.send_previews(telegram.client, job["target"], session_dir, job["channels"], on_sent)
+        else:
+            await publisher.publish_live(telegram.client, config.get("channels", {}), session_dir, job["channels"], on_sent)
+            await remove_published_previews(job, session_dir)
+        job["status"] = "done"
+    except Exception as e:
+        job["status"], job["error"] = "failed", str(e)
+    job_update(job)
+
+async def remove_published_previews(job, session_dir):
+    """Deletes the previews of the channels that were just published from the review channel.
+
+    Only messages VTP recorded as its own previews are deleted. A failure (e.g. no right to delete
+    in the review channel) is reported on the job; the publishing itself has succeeded.
+    """
+    published = [c for c, r in job["results"].items() if r.get("ok")]
+    previews = await run_in_threadpool(pipeline_service.previews_of, session_dir, published)
+    by_chat = {}
+    for preview in previews:
+        by_chat.setdefault(preview["chat_id"], []).append(preview)
+
+    deleted, errors = [], []
+    for chat_id, chat_previews in by_chat.items():
+        try:
+            await telegram.delete_messages(chat_id, [p["msg_id"] for p in chat_previews])
+            deleted += chat_previews
+        except Exception as e:
+            errors.append(str(e))
+    if deleted:
+        await run_in_threadpool(pipeline_service.forget_previews, session_dir, deleted)
+    job["previews_removed"] = len(deleted)
+    if errors:
+        job["cleanup_error"] = f"{len(previews) - len(deleted)} preview(s) couldn't be deleted from the review channel: {'; '.join(errors)}"
+
+@app.post("/api/sessions/{name}/send")
+async def send_post(name: str, body: SendBody):
+    """Starts sending previews or live posts; progress arrives as "job" events on /api/events."""
+    require_telegram()
+    session_dir = await post_call(pipeline_service.session_path, name)
+    config = load_channels_config()
+    unknown = [c for c in body.channels if c not in config.get("channels", {})]
+    if body.kind not in ("previews", "published") or unknown or not body.channels:
+        raise HTTPException(400, "Choose at least one configured channel." + (f" Unknown: {', '.join(unknown)}" if unknown else ""))
+    if any(j["session"] == name and j["status"] == "running" for j in send_jobs.values()):
+        raise HTTPException(409, "This post is already being sent. Wait for it to finish.")
+
+    target = None
+    if body.kind == "previews":
+        target = parse_target(config.get("catch_all_channel"))
+        if not target:
+            raise HTTPException(400, "No review channel set (catch_all_channel in channels.json).")
+
+    await post_call(pipeline_service.ensure_captions, session_dir)
+    job_id = os.urandom(6).hex()
+    job = {"id": job_id, "session": name, "kind": body.kind, "channels": body.channels, "target": target,
+           "status": "running", "results": {}, "error": None}
+    send_jobs[job_id] = job
+    for old_id in list(send_jobs)[:-MAX_KEPT_JOBS]:
+        send_jobs.pop(old_id)
+    asyncio.create_task(run_send_job(job, session_dir))
+    return job
+
+@app.get("/api/jobs/{job_id}")
+async def job_status(job_id: str):
+    if job_id not in send_jobs:
+        raise HTTPException(404, "No such job.")
+    return send_jobs[job_id]
 
 # ==========================================
 # ENTRY POINT

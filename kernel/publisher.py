@@ -153,18 +153,26 @@ async def warm_up_entity_cache(client):
     except Exception:
         print("  [!] Cache sync skipped (Non-fatal).")
 
-async def send_previews(client, catch_all_gate, session_dir, channel_names):
-    """Sends each channel's post to the review channel. Returns {channel: sent message or None}."""
+async def send_previews(client, catch_all_gate, session_dir, channel_names, on_sent=None):
+    """Sends each channel's post to the review channel. Returns {channel: sent message or None}.
+
+    on_sent(channel, message or None) is called after each channel, e.g. to show progress.
+    """
     print(f"\n[~] Dispatching previews to Catch-All Gate ({catch_all_gate})...")
     sent = {}
     for ch_name in channel_names:
         print(f"  -> Sending preview for {ch_name}...")
         sent[ch_name] = await compile_and_send_post(client, catch_all_gate, session_dir, ch_name)
+        if on_sent:
+            on_sent(ch_name, sent[ch_name])
         await asyncio.sleep(random.uniform(3.0, 8.0))
     return sent
 
-async def publish_live(client, channels_dict, session_dir, channel_names):
-    """Posts each channel's post to its live chat_id. Returns {channel: sent message or None}."""
+async def publish_live(client, channels_dict, session_dir, channel_names, on_sent=None):
+    """Posts each channel's post to its live chat_id. Returns {channel: sent message or None}.
+
+    on_sent(channel, message or None) is called after each channel, e.g. to show progress.
+    """
     print("\n========================================================")
     print("  INITIATING LIVE BROADCAST")
     print("========================================================")
@@ -178,6 +186,8 @@ async def publish_live(client, channels_dict, session_dir, channel_names):
         if not live_chat_id:
             print(f"  [X] Skipping {ch_name}: No chat_id defined in config.")
             sent[ch_name] = None
+            if on_sent:
+                on_sent(ch_name, None)
             continue
 
         print(f"  -> Final re-creation and publishing to {ch_name} ({live_chat_id})...")
@@ -185,6 +195,8 @@ async def publish_live(client, channels_dict, session_dir, channel_names):
 
         if sent[ch_name]:
             print(f"  [+] Successfully published to {ch_name}.")
+        if on_sent:
+            on_sent(ch_name, sent[ch_name])
 
         await asyncio.sleep(random.uniform(5.0, 10.0))
 

@@ -1,8 +1,5 @@
 import os
 import glob
-import json
-import sys
-import time
 import tkinter as tk
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter
 import arabic_reshaper
@@ -14,108 +11,13 @@ try:
 except ImportError:
     genai = None
 
-# Paths
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
-WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "_workspace")
-CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
-GEMINI_KEYS_FILE = os.path.join(CREDENTIALS_DIR, "gemini_keys.json")
+from common import (
+    PROJECT_ROOT,
+    load_channels_config, get_latest_session_directory, input_with_timeout,
+    load_gemini_credentials, select_operational_model,
+)
 
-def input_with_timeout(prompt_text, default_value, timeout=5):
-    """Cross-platform input with a timeout and default fallback."""
-    print(f"{prompt_text} [Auto-default: '{default_value}' in {timeout}s]: ", end='', flush=True)
-    try:
-        import msvcrt
-        start_time = time.time()
-        input_str = ""
-        while True:
-            if msvcrt.kbhit():
-                char = msvcrt.getwch()
-                if char in ('\r', '\n'):
-                    print()
-                    return input_str if input_str else str(default_value)
-                elif char == '\b':
-                    if len(input_str) > 0:
-                        input_str = input_str[:-1]
-                        sys.stdout.write('\b \b')
-                        sys.stdout.flush()
-                else:
-                    input_str += char
-                    sys.stdout.write(char)
-                    sys.stdout.flush()
-            if time.time() - start_time > timeout:
-                print(f"\n  [!] Timeout. Using default: {default_value}")
-                return str(default_value)
-            time.sleep(0.05)
-    except ImportError:
-        import select
-        i, o, e = select.select([sys.stdin], [], [], timeout)
-        if i:
-            res = sys.stdin.readline().strip("\n")
-            return res if res else str(default_value)
-        else:
-            print(f"\n  [!] Timeout. Using default: {default_value}")
-            return str(default_value)
-
-def load_gemini_credentials():
-    if os.path.exists(GEMINI_KEYS_FILE):
-        try:
-            with open(GEMINI_KEYS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
-    return {"gemini_api_key": None, "last_used_model": "gemini-1.5-flash"}
-
-def save_gemini_credentials(api_key, model_name):
-    if not os.path.exists(CREDENTIALS_DIR):
-        os.makedirs(CREDENTIALS_DIR)
-    payload = {"gemini_api_key": api_key, "last_used_model": model_name}
-    with open(GEMINI_KEYS_FILE, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-
-def select_operational_model(cached_profile):
-    last_model = cached_profile.get("last_used_model", "gemini-1.5-flash")
-    api_token = cached_profile.get("gemini_api_key")
-
-    if not api_token: return last_model
-
-    print("\n[~] Querying Google API Gateway for live intelligence clusters...")
-    try:
-        client = genai.Client(api_key=api_token)
-        live_models = []
-        for model_meta in client.models.list():
-            if "gemini" in model_meta.name.lower():
-                if any(bad_tag in model_meta.name.lower() for bad_tag in ["embedding", "vision", "live", "audio", "search"]):
-                    continue
-                if "generateContent" in model_meta.supported_actions:
-                    clean_name = model_meta.name.split("/")[-1]
-                    if clean_name not in live_models:
-                        live_models.append(clean_name)
-        live_models.sort()
-    except Exception as e:
-        print(f"[!] Warning: Unable to poll live registry ({e}). Defaulting to offline profile.")
-        return last_model
-
-    model_matrix = {str(i + 1): name for i, name in enumerate(live_models)}
-
-    print("\n========================================================")
-    print("  DYNAMIC GEMINI INTELLIGENCE REPOSITORY")
-    print("========================================================")
-    for index, name in model_matrix.items():
-        print(f"  [{index}] {name.replace('-', ' ').title()} ({name})")
-    print(f"  [Enter] Reuse Last Verified Default ({last_model})")
-    print("========================================================")
-
-    choice = input_with_timeout("[?] Select engine target lane", "").strip()
-
-    selected_model = model_matrix.get(choice, last_model)
-    save_gemini_credentials(api_token, selected_model)
-    return selected_model
-
-def get_latest_session_directory():
-    sessions = glob.glob(os.path.join(WORKSPACE_DIR, "session_*"))
-    return sorted(sessions)[-1] if sessions else None
+KURDISH_LANG_CODES = ['ckb', 'ku', 'kurdish']
 
 def extract_markdown_headline(md_file_path):
     if not os.path.exists(md_file_path): return None
@@ -123,6 +25,32 @@ def extract_markdown_headline(md_file_path):
         for line in f:
             if line.strip().startswith("#"): return line.lstrip("#").strip()
     return None
+
+def shape_rtl(text, lang_code=None, custom_reshaper=None):
+    """Reshapes and reorders RTL text for drawing, with Kurdish glyph workarounds."""
+    process_line = text
+    if lang_code in KURDISH_LANG_CODES:
+        # 1. Pre-Reshape Setup
+        process_line = process_line.replace('ە', 'ة') # Ae -> Teh Marbuta
+        process_line = process_line.replace('ھ', 'ه') # Kurdish Heh -> Arabic Heh
+        process_line = process_line.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
+
+    if custom_reshaper:
+        reshaped = custom_reshaper.reshape(process_line)
+    else:
+        reshaped = arabic_reshaper.reshape(process_line)
+
+    if lang_code in KURDISH_LANG_CODES:
+        # 2. Post-Reshape Ligature Busters & Swaps
+        reshaped = reshaped.replace('\uFE93', '\uFEE9') # Isolated Teh Marbuta -> Isolated Heh
+        reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
+        reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
+
+        # Chop the Lam-Teh Marbuta ligatures in half to prevent Tofu boxes
+        reshaped = reshaped.replace('\uFEF5', '\uFEDD\uFEEA') # Lam Isolated + Final Heh
+        reshaped = reshaped.replace('\uFEF6', '\uFEDE\uFEEA') # Lam Medial + Final Heh
+
+    return get_display(reshaped)
 
 def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, lang_code=None):
     """Wraps text intelligently. Uses a custom RTL reshaper if provided."""
@@ -132,29 +60,7 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, l
         test_line = ' '.join(current_line + [word])
         text_to_measure = test_line
         if is_rtl:
-            process_line = test_line
-            if lang_code in ['ckb', 'ku', 'kurdish']:
-                # 1. Pre-Reshape Setup
-                process_line = process_line.replace('ە', 'ة') # Ae -> Teh Marbuta
-                process_line = process_line.replace('ھ', 'ه') # Kurdish Heh -> Arabic Heh
-                process_line = process_line.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
-
-            if custom_reshaper:
-                reshaped = custom_reshaper.reshape(process_line)
-            else:
-                reshaped = arabic_reshaper.reshape(process_line)
-
-            if lang_code in ['ckb', 'ku', 'kurdish']:
-                # 2. Post-Reshape Ligature Busters & Swaps
-                reshaped = reshaped.replace('\uFE93', '\uFEE9') # Isolated Teh Marbuta -> Isolated Heh
-                reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
-                reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
-
-                # Chop the Lam-Teh Marbuta ligatures in half to prevent Tofu boxes
-                reshaped = reshaped.replace('\uFEF5', '\uFEDD\uFEEA') # Lam Isolated + Final Heh
-                reshaped = reshaped.replace('\uFEF6', '\uFEDE\uFEEA') # Lam Medial + Final Heh
-
-            text_to_measure = get_display(reshaped)
+            text_to_measure = shape_rtl(test_line, lang_code, custom_reshaper)
 
         if draw.textlength(text_to_measure, font=font) <= max_width:
             current_line.append(word)
@@ -229,7 +135,7 @@ def render_channel_assets(session_dir=None):
         print("[ERROR] No session directory found inside _workspace.")
         return
 
-    config = json.load(open(CONFIG_FILE, "r", encoding="utf-8"))
+    config = load_channels_config()
     raw_images = glob.glob(os.path.join(session_dir, "raw_image.*"))
     if not raw_images:
         print(f"[ERROR] Could not find any raw_image.* inside {session_dir}")
@@ -404,29 +310,7 @@ def render_channel_assets(session_dir=None):
             for line in lines:
                 text_to_draw = line
                 if is_rtl:
-                    process_line = line
-                    if lang_code in ['ckb', 'ku', 'kurdish']:
-                        # 1. Pre-Reshape Setup
-                        process_line = process_line.replace('ە', 'ة') # Ae -> Teh Marbuta
-                        process_line = process_line.replace('ھ', 'ه') # Kurdish Heh -> Arabic Heh
-                        process_line = process_line.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
-
-                    if custom_reshaper:
-                        reshaped = custom_reshaper.reshape(process_line)
-                    else:
-                        reshaped = arabic_reshaper.reshape(process_line)
-
-                    if lang_code in ['ckb', 'ku', 'kurdish']:
-                        # 2. Post-Reshape Ligature Busters & Swaps
-                        reshaped = reshaped.replace('\uFE93', '\uFEE9') # Isolated Teh Marbuta -> Isolated Heh
-                        reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
-                        reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
-
-                        # Chop the Lam-Teh Marbuta ligatures in half to prevent Tofu boxes
-                        reshaped = reshaped.replace('\uFEF5', '\uFEDD\uFEEA') # Lam Isolated + Final Heh
-                        reshaped = reshaped.replace('\uFEF6', '\uFEDE\uFEEA') # Lam Medial + Final Heh
-
-                    text_to_draw = get_display(reshaped)
+                    text_to_draw = shape_rtl(line, lang_code, custom_reshaper)
 
                 line_w = draw.textlength(text_to_draw, font=font)
                 if alignment == "center":

@@ -1,6 +1,4 @@
 import os
-import glob
-import json
 import random
 import asyncio
 import re
@@ -11,16 +9,7 @@ sys.dont_write_bytecode = True
 
 # Import existing auth manager (assumed to be in the same directory)
 import auth_manager
-
-# Determine the absolute project root (one level above the 'kernel' folder)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_FILE = os.path.join(PROJECT_ROOT, "_config", "channels.json")
-WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "_workspace")
-
-def get_latest_session_directory():
-    """Locates the latest session folder within the workspace."""
-    sessions = glob.glob(os.path.join(WORKSPACE_DIR, "session_*"))
-    return sorted(sessions)[-1] if sessions else None
+from common import load_channels_config, get_latest_session_directory
 
 def parse_target(target):
     """
@@ -158,8 +147,7 @@ async def main():
 
     print(f"\n[OK] Onboarded to latest session: _workspace/{os.path.basename(session_dir)}/")
 
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    config = load_channels_config()
 
     generate_all_caption_files(session_dir, config)
 

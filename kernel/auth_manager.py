@@ -2,9 +2,8 @@ import os
 import json
 from telethon import TelegramClient
 
-# Determine the absolute project root (one level above the 'kernel' folder)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CREDENTIALS_DIR = os.path.join(PROJECT_ROOT, "_credentials")
+from common import CREDENTIALS_DIR
+
 CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR, "telegram_api.json")
 # Telethon will append '.session' to this path automatically
 SESSION_FILE = os.path.join(CREDENTIALS_DIR, "user_session")

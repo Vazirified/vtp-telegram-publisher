@@ -20,8 +20,7 @@ except ImportError as e:
     print("Please ensure auth_manager.py, text_engine.py, image_engine.py, publisher.py, and telethon are available.")
     sys.exit(1)
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-WORKSPACE_DIR = os.path.join(PROJECT_ROOT, "_workspace")
+from common import WORKSPACE_DIR
 
 def fetch_telegram_dialogs_async(callback, error_callback, offset_date=None):
     """Fetches the 30 most recent chats/dialogs, supporting pagination via offset_date."""

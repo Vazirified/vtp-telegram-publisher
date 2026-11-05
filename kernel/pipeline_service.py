@@ -18,11 +18,11 @@ from PIL import Image
 # Photos uploaded from the browser or downloaded from a chat, before a post exists
 UPLOADS_DIR = os.path.join(WORKSPACE_DIR, "web_uploads")
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
-UPLOAD_NAME = re.compile(r"[0-9a-f]{32}\.(jpg|png|webp)")
-UPLOAD_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+UPLOAD_NAME = re.compile(r"[0-9a-f]{32}\.(jpg|png|webp|avif)")
+UPLOAD_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "AVIF": ".avif"}
 
 SESSION_NAME = re.compile(r"session_[0-9A-Za-z_-]+")
-SESSION_IMAGE = re.compile(r"[0-9A-Za-z_.-]+\.(jpg|jpeg|png|webp)", re.IGNORECASE)
+SESSION_IMAGE = re.compile(r"[0-9A-Za-z_.-]+\.(jpg|jpeg|png|webp|avif)", re.IGNORECASE)
 LANGUAGE_CODE = re.compile(r"[a-z]{2,3}")
 
 # Web-only state kept next to the session's files; the terminal pipeline ignores these
@@ -114,7 +114,7 @@ def list_sessions(limit=100):
 # NEW POSTS
 # ==========================================
 def save_upload(data):
-    """Stores an uploaded photo and returns its token. Raises PostError if it isn't a JPG/PNG/WebP."""
+    """Stores an uploaded photo and returns its token. Raises PostError if it isn't a JPG/PNG/WebP/AVIF."""
     if len(data) > MAX_UPLOAD_BYTES:
         raise PostError("The photo is larger than 30 MB.")
     try:
@@ -122,9 +122,9 @@ def save_upload(data):
             image_format = img.format
             img.verify()
     except Exception:
-        raise PostError("This file isn't a photo VTP can read. Use JPG or PNG.")
+        raise PostError("This file isn't a photo VTP can read. Use JPG, PNG, WebP or AVIF.")
     if image_format not in UPLOAD_FORMATS:
-        raise PostError(f"{image_format} photos aren't supported. Use JPG or PNG.")
+        raise PostError(f"{image_format} photos aren't supported. Use JPG, PNG, WebP or AVIF.")
 
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     token = uuid.uuid4().hex + UPLOAD_FORMATS[image_format]

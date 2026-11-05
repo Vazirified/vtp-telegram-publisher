@@ -34,7 +34,7 @@ def media_label(msg):
     if msg.video: return "Video"
     if msg.voice: return "Voice message"
     if msg.audio: return "Audio"
-    if msg.sticker: return "Sticker"
+    if is_pack_sticker(msg): return "Sticker"
     if msg.poll: return "Poll"
     if msg.geo: return "Location"
     if msg.contact: return "Contact"
@@ -49,11 +49,22 @@ def has_preview_image(msg):
         return True
     return bool(msg.web_preview and msg.web_preview.photo)
 
+def is_pack_sticker(msg):
+    """True for a sticker from a sticker pack.
+
+    Telegram also marks .webp files people send as stickers, but those belong to no pack.
+    """
+    sticker = msg.sticker
+    if not sticker:
+        return False
+    attribute = next(a for a in sticker.attributes if isinstance(a, types.DocumentAttributeSticker))
+    return not isinstance(attribute.stickerset, types.InputStickerSetEmpty)
+
 def is_source_photo(msg):
     """True if the message holds a full photo (or image file) that can be a post's raw image."""
     if msg.photo:
         return True
-    return bool(msg.document and not msg.sticker and msg.file and (msg.file.mime_type or "").startswith("image/"))
+    return bool(msg.document and not is_pack_sticker(msg) and msg.file and (msg.file.mime_type or "").startswith("image/"))
 
 def largest_size(sizes):
     """[width, height] of the largest photo size or thumbnail that has dimensions, or None."""

@@ -149,7 +149,7 @@ class NewPostView {
       }, h("img", { src: `/api/telegram/media/${p.chat_id}/${p.msg_id}`, alt: "Photo from Telegram" }));
     });
 
-    const fileInput = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp", hidden: true });
+    const fileInput = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/avif", hidden: true });
     fileInput.addEventListener("change", () => {
       const file = fileInput.files[0];
       if (!file) return;

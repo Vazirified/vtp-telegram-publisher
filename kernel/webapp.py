@@ -9,6 +9,7 @@ import shutil
 import asyncio
 import argparse
 import datetime
+import mimetypes
 import threading
 import subprocess
 import webbrowser
@@ -37,6 +38,9 @@ from pydantic import BaseModel, Field
 WEB_DIR = os.path.join(PROJECT_ROOT, "kernel", "web")
 FONTS_DIR = os.path.join(PROJECT_ROOT, "_config", "fonts")
 DEFAULT_PORT = 8765
+
+# Older Pythons don't know .avif; with "nosniff" the browser then won't show the photo
+mimetypes.add_type("image/avif", ".avif")
 
 # The server only listens on 127.0.0.1. Checking the Host header as well stops other
 # websites from reaching it through DNS rebinding (a domain that resolves to 127.0.0.1).

@@ -1,3 +1,22 @@
+// VTP web interface: the page's shared helpers, routing, the Telegram tab and the Setup tab.
+//
+// The page is served by kernel/webapp.py (started with run-web.bat / run-web.sh) at
+// http://127.0.0.1:8765/. There is no build step and no CDN: index.html loads this file and then
+// posts.js as classic deferred scripts that share globals (functions, classes and `app` below are
+// used by posts.js, and route() here creates posts.js's NewPostView and PostView). Start-up runs on
+// DOMContentLoaded, at the end of this file, once both scripts are loaded.
+//
+// Sections: HELPERS (api, h, formats, avatar, reactionIcon) · TELEGRAM HTML SANITIZER ·
+// APP STATE AND ROUTING · TELEGRAM VIEWER (ChatPane, TelegramView) · SETUP PAGE · START.
+//
+// Things to keep in mind when editing:
+// - The server sends a strict Content-Security-Policy: no inline scripts, no `style` attributes in
+//   HTML, no outside hosts. Setting `element.style.x` from JS is allowed and used for computed values.
+// - Message HTML from Telegram is never inserted as-is; see sanitizeTelegramHtml().
+// - Element.append()/replaceChildren() turn `null` into the text "null"; only h() skips null/false.
+//   Pass "" instead, or build the children with h().
+// - Every element showing news text or chat names gets dir="auto", so Persian, Arabic and Kurdish
+//   read right to left.
 "use strict";
 
 // ==========================================
@@ -22,6 +41,7 @@ async function api(path, { json, ...init } = {}) {
   return data;
 }
 
+/** The message of a FastAPI error body: `detail` is a string (HTTPException) or a list (validation errors). */
 function errorText(data) {
   if (!data) return "";
   if (typeof data.detail === "string") return data.detail;
@@ -29,7 +49,12 @@ function errorText(data) {
   return "";
 }
 
-/** Creates an element. Props starting with "on" become event listeners. */
+/**
+ * Creates an element: h("p", { class: "muted", dir: "auto" }, "text", childElement, [more children]).
+ * Props starting with "on" become event listeners; `true` sets an empty attribute (e.g. hidden: true);
+ * null, undefined and false props are left out. Children may be nested arrays; null, undefined and
+ * false children are skipped, strings become text (never HTML).
+ */
 function h(tag, props = {}, ...children) {
   const el = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {
@@ -45,17 +70,24 @@ function h(tag, props = {}, ...children) {
   return el;
 }
 
+// Dates and numbers in the browser's own language and time zone (the server sends ISO dates in UTC)
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
 const dayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" });
 const shortDayFormat = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
 const compactNumber = new Intl.NumberFormat(undefined, { notation: "compact" });
 
+/** A chat list date: the time for today, else the day and month. */
 function listTime(iso) {
   const date = new Date(iso);
   return date.toDateString() === new Date().toDateString() ? timeFormat.format(date) : shortDayFormat.format(date);
 }
 
-/** Profile picture over coloured initials; the initials stay visible if there is no picture. */
+/**
+ * Profile picture over coloured initials; the initials stay visible if there is no picture or it
+ * fails to load. The colour comes from the chat ID, so a chat keeps its colour. `photo` is the
+ * picture's ID from the server, part of the URL so a changed picture isn't served from the cache.
+ * `size` is an extra class ("small").
+ */
 function avatar(name, id, photo, size = "") {
   const initials = (name || "?").trim().split(/\s+/).slice(0, 2).map((w) => [...w][0] || "").join("");
   const el = h("span", { class: `avatar ${size}`, "aria-hidden": "true" }, initials.toUpperCase() || "?");
@@ -83,9 +115,11 @@ function reactionIcon(reaction) {
 // ==========================================
 // TELEGRAM HTML SANITIZER
 // ==========================================
-// Message HTML comes from Telegram (via Telethon). It is parsed in an inert document and
-// rebuilt from these tags only; all other tags keep their text, all attributes are dropped
-// except safe link targets.
+// Message HTML comes from Telegram (via Telethon's html.unparse, which doesn't escape plain URLs
+// inside href), so it is never inserted with innerHTML. It is parsed in an inert document (no
+// scripts run, no images load) and rebuilt from these tags only: other tags keep their text, and
+// all attributes are dropped except link targets with a safe scheme. Custom emoji (<tg-emoji>)
+// become spans showing their fallback character.
 const ALLOWED_TAGS = {
   STRONG: "strong", B: "strong", EM: "em", I: "em", U: "u", DEL: "del", S: "del",
   CODE: "code", PRE: "pre", BLOCKQUOTE: "blockquote", A: "a", BR: "br",
@@ -93,6 +127,7 @@ const ALLOWED_TAGS = {
 };
 const SAFE_LINK = /^(https?:|tg:|mailto:)/i;
 
+/** Returns a DocumentFragment with the safe version of a message's HTML. */
 function sanitizeTelegramHtml(html) {
   const doc = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
   const fragment = document.createDocumentFragment();
@@ -100,6 +135,7 @@ function sanitizeTelegramHtml(html) {
   return fragment;
 }
 
+/** Copies text and allowed elements from `source` into `target`, recursively; links open in a new tab. */
 function copySafeNodes(source, target) {
   for (const node of source.childNodes) {
     if (node.nodeType === Node.TEXT_NODE) {
@@ -130,9 +166,18 @@ function copySafeNodes(source, target) {
 // ==========================================
 // APP STATE AND ROUTING
 // ==========================================
+// Page-wide state:
+//   status      the last /api/status answer (Telegram state, Gemini key, config), or null when the server is unreachable
+//   view        the mounted page object (TelegramView, NewPostView or PostView), or null for Setup and the post list.
+//               Views may have mount(), leave() (called before another page replaces them),
+//               onUpdate(update) for live Telegram updates and, for PostView, onJob(job) and onTelegramStatus().
+//   draft       set later: the New post page's unsaved text and photo/video choice (TelegramView.startPost fills it)
+//   selectMode  set later: false once select mode was turned off, until the page is reloaded
 const app = { status: null, view: null };
+// The <main id="view"> element every page is drawn into
 const viewRoot = () => document.getElementById("view");
 
+/** Reads /api/status into app.status and colours the dot at the top right (green: Telegram ready). */
 async function refreshStatus() {
   try {
     app.status = await api("/api/status");
@@ -158,6 +203,11 @@ function currentRoute() {
   return { page: page || "telegram", arg: arg && decodeURIComponent(arg), arg2 };
 }
 
+/**
+ * Shows the page for the current #hash (runs at start-up and on every hashchange):
+ * #/telegram[/chat[/message]], #/posts, #/post/new, #/post/<session name>, #/setup.
+ * Unknown pages show the Telegram tab.
+ */
 async function route() {
   const { page, arg, arg2 } = currentRoute();
   const tab = page === "post" ? "posts" : page;
@@ -188,9 +238,10 @@ async function route() {
 // ==========================================
 // TELEGRAM VIEWER
 // ==========================================
-// Messages per request, as in telegram_service.list_messages()
+// Messages per request, as in telegram_service.list_messages(); a shorter page means there are no older ones
 const PAGE_SIZE = 30;
 
+/** Splits messages (sorted by ID) into bubbles: consecutive messages of one album share a bubble. */
 function groupAlbums(messages) {
   const groups = [];
   for (const msg of messages) {
@@ -201,6 +252,7 @@ function groupAlbums(messages) {
   return groups;
 }
 
+/** A service message's action name as words, e.g. "ChatAddUser" -> "Chat add user". */
 function prettyAction(action) {
   const words = action.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
   return words.charAt(0).toUpperCase() + words.slice(1);
@@ -208,7 +260,13 @@ function prettyAction(action) {
 
 /**
  * The messages of one chat in a scrolling box: bubbles, albums, reactions, "Load older" and live
- * updates. Used by the Telegram tab and by the review chat on the post page.
+ * updates. Used by the Telegram tab, the review chat on the post page, and (one message only,
+ * via openMessage) the published-post cards.
+ *
+ * Every change redraws the whole box with render(position), which then restores the scroll
+ * position. That stays stable because images carry their size (width/height from `image_size`)
+ * before they load. Whether the box was scrolled to the bottom is worked out when needed, not
+ * tracked with scroll events.
  */
 class ChatPane {
   /** selected: message IDs to draw as selected (the Telegram tab's select mode shares its Set). */
@@ -227,6 +285,7 @@ class ChatPane {
   get id() { return this.chat ? this.chat.id : null; }
   get info() { return this.chat ? this.chat.info : null; }
 
+  /** Closes the chat and shows `text` in its place. */
   clear(text) {
     this.chat = null;
     this.box.replaceChildren(h("div", { class: "empty-state" }, text));
@@ -280,6 +339,7 @@ class ChatPane {
     }
   }
 
+  /** Scrolls to a loaded message and flashes it; false if it isn't loaded. */
   showMessage(msgId) {
     const el = [...this.box.querySelectorAll(".msg[data-ids]")]
       .find((m) => m.dataset.ids.split(",").map(Number).includes(msgId));
@@ -294,6 +354,7 @@ class ChatPane {
     for (const msg of messages) this.chat.messages.set(msg.id, msg);
   }
 
+  /** Loads the page of messages before the oldest one shown, keeping the view where it was. */
   async loadOlder(button) {
     const chat = this.chat;
     button.disabled = true;
@@ -348,6 +409,7 @@ class ChatPane {
     if (changed && this.chat === chat) this.render({ scrollTop: this.box.scrollTop });
   }
 
+  /** "Who reacted": loads everyone who reacted to a message (groups and private chats only). */
   async loadReactors(msgId, button) {
     const chat = this.chat;
     button.disabled = true;
@@ -362,6 +424,11 @@ class ChatPane {
     }
   }
 
+  /**
+   * Redraws all loaded messages, oldest first, with day separators. `position` says where to scroll
+   * afterwards: { scroll: "bottom" }, { fromBottom } (distance from the end, kept when older messages
+   * are added above), { scrollTop } (stay put), or {} (leave it to the browser).
+   */
   render(position) {
     const chat = this.chat;
     const box = this.box;
@@ -394,6 +461,11 @@ class ChatPane {
     }
   }
 
+  /**
+   * One message bubble (or one album): sender, photos, other media as a note, text, reactions,
+   * picker, then views, "edited" and the time. data-ids lists every message ID in the bubble, for
+   * selecting and for showMessage().
+   */
   bubble(group) {
     const kind = this.chat.info.kind;
     const first = group[0];
@@ -401,6 +473,7 @@ class ChatPane {
     const images = group.filter((m) => m.has_image);
     const parts = [];
 
+    // Sender names: in groups for other people's messages, in channels for signed posts
     if (withText.sender && (kind === "group" ? !first.out : kind === "channel")) {
       parts.push(h("div", { class: "sender", dir: "auto" }, withText.sender));
     }
@@ -447,6 +520,7 @@ class ChatPane {
       }, "☺+"),
       h("span", {}, meta.join(" · "))));
 
+    // Your own messages sit on the right, except in channels, where every post is the channel's
     const isOut = first.out && kind !== "channel";
     const selected = group.some((m) => this.selected.has(m.id));
     return h("div", {
@@ -503,6 +577,11 @@ class ChatPane {
     }
   }
 
+  /**
+   * The picker under a message: your recent reactions (or the first of the chat's allowed ones),
+   * and "More" for all of them. The menu comes from the server already limited to what the chat
+   * allows and what the account may use (custom emoji only with Premium).
+   */
   reactionPicker(msg) {
     const menu = this.chat.reactionMenu;
     const note = (text, cls = "muted") => h("div", { class: `reaction-picker ${cls} small` }, text);
@@ -534,6 +613,7 @@ class ChatPane {
     return this.react(msg.id, chosen);
   }
 
+  /** Sets your reactions on a message on Telegram ([] removes yours) and shows the message as returned. */
   async react(msgId, reactions) {
     const chat = this.chat;
     this.pickerFor = null;
@@ -557,6 +637,7 @@ class ChatPane {
     if (!isOpen) return;
     if (update.type === "new") {
       if (this.single) return; // showing one message only; newer ones don't belong here
+      // Updates in quick succession (e.g. the messages of an album) cause one reload
       clearTimeout(this.reloadTimer);
       this.reloadTimer = setTimeout(() => this.reload(), 400);
     } else if (update.type === "deleted") {
@@ -568,6 +649,12 @@ class ChatPane {
   }
 }
 
+/**
+ * The Telegram tab: the chat list on the left (shortcuts to the channels in channels.json, then
+ * all chats) and the open chat on the right. On a phone only one of the two shows at a time
+ * (the "show-chat" class). It stays mounted while moving between chats (see route()).
+ * Reading here marks nothing as read; reacting is the only thing this tab changes on Telegram.
+ */
 class TelegramView {
   constructor() {
     this.dialogs = [];
@@ -579,6 +666,7 @@ class TelegramView {
     this.selected = new Set();
   }
 
+  /** Draws the tab, or a link to Setup while Telegram isn't connected (watchStatus remounts it once it is). */
   mount() {
     const view = viewRoot();
     if (!telegramReady()) {
@@ -604,7 +692,8 @@ class TelegramView {
     const messagesBox = h("div", { class: "messages" });
     this.pane = new ChatPane(messagesBox, { selected: this.selected });
     // In select mode a tap selects the message instead of following links or opening photos.
-    // Buttons inside a message (e.g. "Who reacted") keep working.
+    // Buttons inside a message (e.g. "Who reacted") keep working. The listener runs in the capture
+    // phase so it sees the tap before a link does.
     messagesBox.addEventListener("click", (event) => {
       if (!this.selecting || event.target.closest("button")) return;
       const msg = event.target.closest(".msg[data-ids]");
@@ -631,6 +720,7 @@ class TelegramView {
   }
 
   // ---------------------------------------------------------------- chat list
+  /** The review channel and every channel in channels.json; one that can't be found shows why. */
   async loadShortcuts() {
     try {
       this.shortcuts = await api("/api/telegram/shortcuts");
@@ -651,6 +741,7 @@ class TelegramView {
     })));
   }
 
+  /** Loads the newest chats, or with `more` the next older page ("Load more chats"). */
   async loadDialogs(more) {
     this.moreButton.disabled = true;
     try {
@@ -677,6 +768,11 @@ class TelegramView {
     this.dialogList.replaceChildren(...this.dialogs.map((d) => this.chatItem(d)));
   }
 
+  /**
+   * One row of the chat list: picture, name, time, label (shortcuts), last message, the red ♥ badge
+   * for reactions to your messages you haven't seen, and the unread count. A shortcut whose chat
+   * wasn't found has no ID and isn't clickable.
+   */
   chatItem({ id, name, photo, label, preview, date, unread, unread_reactions }) {
     const active = this.pane.id === id;
     return h("li", {
@@ -705,6 +801,7 @@ class TelegramView {
     }
   }
 
+  /** The chat's name from the list, shown while the chat itself loads. */
   knownName(id) {
     const match = this.dialogs.find((d) => d.id === id) || this.shortcuts.find((s) => s.chat_id === id);
     return match ? match.name : null;
@@ -748,6 +845,7 @@ class TelegramView {
   }
 
   // ---------------------------------------------------------------- select mode
+  /** Turns select mode on or off ("Select" button); remembered in app.selectMode until the page is reloaded. */
   setSelecting(on) {
     this.selecting = on;
     app.selectMode = on;
@@ -775,6 +873,7 @@ class TelegramView {
       : "Turn on select mode to pick messages for a new post.";
   }
 
+  /** Selects a tapped bubble's messages, or unselects them if all were selected; marks bubbles without redrawing. */
   toggleSelected(ids) {
     const allSelected = ids.every((id) => this.selected.has(id));
     for (const id of ids) {
@@ -822,6 +921,7 @@ class TelegramView {
   }
 
   // ---------------------------------------------------------------- live updates
+  /** A live update goes to the open chat; the chat list is reloaded shortly after a burst of updates. */
   onUpdate(update) {
     if (this.unavailable) return;
     this.pane.onUpdate(update);
@@ -833,6 +933,11 @@ class TelegramView {
 // ==========================================
 // SETUP PAGE
 // ==========================================
+// Three cards drawn from /api/status: Telegram (API ID/hash, login with phone, code and two-step
+// password), Gemini (API key), and Rendering and channels (channels.json and Raqm checks).
+// Keys are stored by the server in _credentials/; the page never shows them.
+
+/** A labelled input. */
 function field(label, attrs) {
   return h("label", {}, label, h("input", attrs));
 }
@@ -858,8 +963,11 @@ function actionForm(fields, buttonText, submit) {
   return form;
 }
 
+// Kept across redraws of the Setup page: the result of saving a Gemini key (shown once), and
+// whether "Use a different number" was tapped while a login code is pending
 const setupNotes = { gemini: null, changePhone: false };
 
+/** Draws the Setup page from a fresh status; redrawn after every action. */
 async function renderSetup() {
   const status = await refreshStatus();
   if (currentRoute().page !== "setup") return;
@@ -875,6 +983,7 @@ async function renderSetup() {
   if (status.telegram.state === "connecting") setTimeout(() => { if (currentRoute().page === "setup") renderSetup(); }, 2000);
 }
 
+/** The Telegram card for the connection state and login step reported by telegram_service. */
 function telegramCard(t) {
   const card = h("div", { class: "card" }, h("h2", {}, "Telegram"));
   const done = () => { setupNotes.changePhone = false; return renderSetup(); };
@@ -919,6 +1028,7 @@ function telegramCard(t) {
   return card;
 }
 
+/** The Gemini card: whether a key is saved, and a form to save or replace it (the server checks it by listing models). */
 function geminiCard(g) {
   const card = h("div", { class: "card" }, h("h2", {}, "Gemini"));
   card.append(g.key_set
@@ -938,6 +1048,7 @@ function geminiCard(g) {
   return card;
 }
 
+/** Whether _config/channels.json can be read, and whether Pillow's Raqm layout (needed for Kurdish) is active. */
 function systemCard(status) {
   const config = status.config;
   let configText;
@@ -958,6 +1069,12 @@ function systemCard(status) {
 // ==========================================
 // START
 // ==========================================
+/**
+ * Listens to the server-sent events on /api/events: Telegram updates (new, edited and deleted
+ * messages, reaction changes) go to the Telegram tab or the post page (review chat, published
+ * cards); "job" events report the progress of sending and video rendering to the post page.
+ * EventSource reconnects by itself when the connection drops.
+ */
 function startLiveUpdates() {
   const source = new EventSource("/api/events");
   source.onmessage = (event) => {
@@ -970,6 +1087,7 @@ function startLiveUpdates() {
   };
 }
 
+/** Checked every 5 seconds: reacts when the Telegram connection state changes. */
 async function watchStatus() {
   const before = app.status ? app.status.telegram.state : null;
   await refreshStatus();

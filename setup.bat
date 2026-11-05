@@ -1,6 +1,13 @@
 @echo off
+:: VTP setup for Windows: double-click setup.bat once (run.bat also offers to start it).
+:: - Uses the Python on PATH, else %LOCALAPPDATA%\Programs\Python\Python312, else downloads
+::   Python 3.12.3 from python.org and installs it for this user (no admin rights needed).
+:: - Creates the virtual environment in .venv (kept if it exists) and installs requirements.txt.
+:: Headlines need no extra system library on Windows: kernel\lib holds the FriBiDi DLL that
+:: Pillow's Raqm text layout uses, and imageio-ffmpeg brings ffmpeg for video posts.
+:: Afterwards start VTP with run-web.bat (web interface) or run.bat (terminal + window interface).
 
-:: Step 0: Auto-elevate execution container to Windows Terminal if available
+:: Step 0: Reopen this script in Windows Terminal when it is installed
 if not defined WT_SESSION (
     where wt >nul 2>&1
     if %errorlevel% equ 0 (
@@ -9,7 +16,7 @@ if not defined WT_SESSION (
     )
 )
 
-:: Force the current working directory to match the script's actual location
+:: Run from the project folder, wherever the script is called from
 cd /d "%~dp0"
 
 title ePlanet Publisher - Autonomous Setup Console
@@ -42,7 +49,7 @@ if exist "%USERPROFILE%\AppData\Local\Programs\Python\Python312\python.exe" (
 )
 
 :DOWNLOAD_PYTHON
-:: Step 3: Download and install Python completely headlessly
+:: Step 3: Download Python 3.12 and install it silently for the current user, added to PATH
 echo [-] Python environment missing from this terminal workspace.
 echo [--^>^] Downloading official Python 3.12 installer via curl...
 curl -L -o "%TEMP%\python_installer.exe" https://www.python.org/ftp/python/3.12.3/python-3.12.3-amd64.exe
@@ -60,10 +67,10 @@ start /wait "" "%TEMP%\python_installer.exe" /quiet InstallAllUsers=0 PrependPat
 :: Clean up installer binary
 del "%TEMP%\python_installer.exe"
 
-:: Force environment path variables into the live terminal context
+:: The installer's PATH change only reaches new windows; add it to this one by hand
 set "PATH=%USERPROFILE%\AppData\Local\Programs\Python\Python312\;%USERPROFILE%\AppData\Local\Programs\Python\Python312\Scripts\;%PATH%"
 
-:: Runtime check validation
+:: Check that the installed Python runs
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Critical failure: Python installation was aborted or paths rejected.
@@ -79,7 +86,7 @@ echo :          SANDBOX ENVIRONMENT CONFIGURATION           :
 echo +------------------------------------------------------+
 echo.
 
-:: Step 4: Build local virtual environment container
+:: Step 4: Create the virtual environment in .venv, unless it already exists
 if not exist .venv (
     echo [--^>^] Creating localized virtual environment venv...
     python -m venv .venv
@@ -96,11 +103,11 @@ if not exist .venv (
 echo [--^>^] Activating local execution context...
 call .venv\Scripts\activate
 
-:: Step 6: Upgrade package managers inside container
+:: Step 6: Upgrade pip and its build tools inside the virtual environment
 echo [--^>^] Upgrading environment core managers...
 python -m pip install --upgrade pip setuptools wheel
 
-:: Step 7: Batch install pipeline requirements from requirements.txt
+:: Step 7: Install the Python packages listed in requirements.txt
 echo [--^>^] Syncing workspace dependencies with remote mirrors...
 echo --------------------------------------------------------
 pip install -r requirements.txt

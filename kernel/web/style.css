@@ -1,4 +1,16 @@
-/* Dana comes from _config/fonts when present; the fallbacks cover Persian, Arabic and Kurdish too */
+/*
+ * VTP web interface styles, for index.html, app.js and posts.js (served by kernel/webapp.py; no build step).
+ *
+ * Sections, in order: fonts and theme colours · page layout · top bar · shared pieces (cards, forms,
+ * buttons) · Telegram viewer (chat list, messages, reactions) · select mode · posts (post list,
+ * New post, the post page's Texts, Images/Video, Captions and Publish sections, published posts,
+ * review chat) · phone layout.
+ *
+ * The server's Content-Security-Policy forbids style="" attributes, so every static style lives here;
+ * values worked out at run time (avatar colours, the area editor's size and grid) are set from JS.
+ */
+
+/* Dana comes from _config/fonts (served at /fonts/) when present; the fallbacks cover Persian, Arabic and Kurdish too */
 @font-face {
   font-family: "Dana";
   src: url("/fonts/Dana-Regular.ttf") format("truetype");
@@ -12,6 +24,8 @@
   font-display: swap;
 }
 
+/* Theme colours: dark by default, light when the device prefers it (see the media query below).
+   Use these variables rather than fixed colours so both themes work. */
 :root {
   --bg: #17191c;
   --surface: #212429;
@@ -47,6 +61,9 @@
   }
 }
 
+/* ---------------------------------------------------------------- page layout */
+/* The body is a column: the top bar, then <main id="view"> filling the rest of the window.
+   The Telegram tab scrolls inside its own panes; other pages scroll inside .page. */
 * { box-sizing: border-box; }
 
 html, body {
@@ -109,6 +126,7 @@ button, input, textarea, select {
   color: var(--text);
 }
 
+/* Telegram connection: grey while connecting, green when ready, amber when Setup needs attention */
 .status-dot {
   width: 10px;
   height: 10px;
@@ -228,6 +246,7 @@ input:focus, textarea:focus {
 .icon-btn:hover { background: var(--surface-2); }
 
 /* ---------------------------------------------------------------- Telegram viewer */
+/* Chat list (.tg-list) on the left, open chat (.tg-chat) on the right; each scrolls on its own */
 .tg {
   flex: 1;
   min-height: 0;
@@ -341,6 +360,7 @@ input:focus, textarea:focus {
   text-overflow: ellipsis;
 }
 
+/* Red ♥: reactions to your messages in this chat that you haven't seen yet */
 .reaction-badge {
   flex: none;
   padding: 0 6px;
@@ -381,6 +401,7 @@ input:focus, textarea:focus {
   min-height: 52px;
 }
 
+/* The ← back button is only needed on phones (see the end of this file) */
 .chat-head .back { display: none; }
 
 .chat-head .title {
@@ -431,6 +452,7 @@ input:focus, textarea:focus {
   color: var(--muted);
 }
 
+/* A message row; your own messages (.out) sit on the right */
 .msg {
   display: flex;
 }
@@ -453,6 +475,7 @@ input:focus, textarea:focus {
   color: var(--accent);
 }
 
+/* Photos of a message or album: one keeps its shape, several become square tiles (n2..n4, many) */
 .media-grid {
   display: grid;
   gap: 2px;
@@ -484,6 +507,7 @@ input:focus, textarea:focus {
   color: var(--muted);
 }
 
+/* Message text: line breaks kept; each paragraph takes the direction of its own first letters */
 .text {
   padding: 6px 12px 0;
   white-space: pre-wrap;
@@ -504,6 +528,7 @@ input:focus, textarea:focus {
   border-radius: 4px;
 }
 
+/* Reaction counts under a message, then the names of who reacted */
 .reactions-block {
   padding: 6px 12px 0;
 }
@@ -562,6 +587,7 @@ input:focus, textarea:focus {
 .reaction-choice:hover { background: var(--surface); }
 .reaction-choice .custom-emoji { width: 24px; height: 24px; }
 
+/* ☺+ at the start of the line with views and time */
 .react-btn {
   margin-inline-end: auto;
   padding: 0 6px;
@@ -608,6 +634,7 @@ input:focus, textarea:focus {
   font-size: 13px;
 }
 
+/* Bottom line of a bubble: ☺+, views, "edited", time */
 .meta {
   display: flex;
   align-items: center;
@@ -618,6 +645,7 @@ input:focus, textarea:focus {
   color: var(--muted);
 }
 
+/* Service messages (e.g. "Chat add user") */
 .service {
   align-self: center;
   padding: 2px 10px;
@@ -648,6 +676,7 @@ input:focus, textarea:focus {
   font-weight: 700;
 }
 
+/* A selected message gets an accent outline; the bar at the bottom offers "Start post" */
 .tg.selecting .msg { cursor: pointer; }
 .tg.selecting .bubble { transition: box-shadow 0.1s; }
 .msg.selected .bubble {
@@ -670,12 +699,13 @@ input:focus, textarea:focus {
   font-size: 14px;
 }
 
-/* A message opened from a link on the post page */
+/* A message opened from a link on the post page (or a review chat "view" link) flashes briefly */
 .msg.flash .bubble {
   box-shadow: 0 0 0 3px var(--warn);
 }
 
 /* ---------------------------------------------------------------- posts */
+/* Post list, New post page and post page. A .page fills <main> and scrolls; .wide for the post page. */
 .page {
   flex: 1 1 auto;
 }
@@ -744,12 +774,14 @@ a.btn.primary { color: var(--accent-text); }
   font-size: 13px;
 }
 
+/* "Saving..." / "Saved" next to an autosaved field */
 .save-status {
   margin-inline-start: auto;
   font-size: 12px;
   font-weight: 400;
 }
 
+/* Posts tab: one row per post with its thumbnail */
 .post-list {
   display: flex;
   flex-direction: column;
@@ -791,6 +823,7 @@ a.btn.primary { color: var(--accent-text); }
   white-space: nowrap;
 }
 
+/* New post: the photo/video choices and the upload tile */
 .photo-tiles {
   display: flex;
   flex-wrap: wrap;
@@ -876,7 +909,7 @@ a.btn.primary { color: var(--accent-text); }
 }
 .post-section[open] > summary::before { transform: rotate(45deg); }
 
-/* Texts */
+/* Texts: one foldable block per language */
 .lang-block {
   border-top: 1px solid var(--border);
   padding: 8px 0;
@@ -900,7 +933,7 @@ a.btn.primary { color: var(--accent-text); }
   text-align: left;
 }
 
-/* Images */
+/* Images (or Video): the area editor beside the blur/mute options, then one card per channel */
 .render-options {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
@@ -908,6 +941,7 @@ a.btn.primary { color: var(--accent-text); }
   align-items: start;
 }
 
+/* Area editor: the photo inside a dark grid margin. Its aspect ratio is set from JS to the photo's. */
 .aoi-frame {
   position: relative;
   width: 100%;
@@ -923,6 +957,8 @@ a.btn.primary { color: var(--accent-text); }
   user-select: none;
 }
 
+/* The photo (or looping video) in the middle: a margin of AOI_MARGIN (0.25 of the photo) on each
+   side makes the frame 1.5 times the photo, so 0.25 / 1.5 = 16.667%. Keep in step with posts.js. */
 .aoi-photo {
   position: absolute;
   left: 16.667%;
@@ -932,6 +968,7 @@ a.btn.primary { color: var(--accent-text); }
   pointer-events: none;
 }
 
+/* The marked area; position and size set from JS */
 .aoi-rect {
   position: absolute;
   border: 2px solid var(--accent);
@@ -940,6 +977,7 @@ a.btn.primary { color: var(--accent-text); }
 }
 .aoi-rect[hidden] { display: none; }
 
+/* Rendered images or videos, one card per channel */
 .channel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -1010,6 +1048,7 @@ a.btn.primary { color: var(--accent-text); }
   gap: 6px;
 }
 
+/* Notes on a channel card, e.g. "Headline too long", "Text changed after rendering" */
 .badges {
   display: flex;
   flex-wrap: wrap;
@@ -1026,7 +1065,7 @@ a.btn.primary { color: var(--accent-text); }
 
 .headline-editor[hidden] { display: none; }
 
-/* Captions */
+/* Captions: per channel, the HTML editor beside a preview of how Telegram shows it */
 .caption-block {
   border-top: 1px solid var(--border);
   padding: 12px 0;
@@ -1054,7 +1093,7 @@ a.btn.primary { color: var(--accent-text); }
   min-height: 100%;
 }
 
-/* Publish */
+/* Publish: a table of channels (#, tick box, preview and live status), then the send buttons */
 .publish-table {
   width: 100%;
   border-collapse: collapse;
@@ -1099,6 +1138,7 @@ a.btn.primary { color: var(--accent-text); }
   margin-top: 8px;
 }
 
+/* "Start over" and its description under the published cards */
 .start-over {
   display: flex;
   flex-wrap: wrap;
@@ -1122,6 +1162,7 @@ a.btn.primary { color: var(--accent-text); }
   color: var(--text);
 }
 
+/* A published card's ChatPane showing one message: as tall as the post, no scrolling of its own */
 .single-post {
   flex: none;
   overflow: visible;
@@ -1169,24 +1210,28 @@ a.btn.primary { color: var(--accent-text); }
 
 .review-head small { color: var(--muted); }
 
+/* The review chat's messages scroll inside a fixed height, so the page doesn't grow with the chat */
 .review-messages {
   flex: none;
   height: min(70vh, 640px);
 }
 
+/* A checkbox with its label */
 .check {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
+/* ---------------------------------------------------------------- phone layout */
+/* Phones: post page columns stack, two channel cards per row */
 @media (max-width: 760px) {
   .render-options, .caption-columns { grid-template-columns: 1fr; }
   .channel-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
   .page { padding: 12px; }
 }
 
-/* Phones: list and chat are separate screens */
+/* Phones: chat list and chat are separate screens; TelegramView adds .show-chat while a chat is open */
 @media (max-width: 760px) {
   .tg { grid-template-columns: 1fr; }
   .tg .tg-chat { display: none; }

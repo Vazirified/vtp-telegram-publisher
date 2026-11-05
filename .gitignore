@@ -4,7 +4,7 @@ _credentials/
 # Local channel config, templates and fonts (contains live chat IDs)
 _config/
 
-# Per-run output (downloaded media, session folders)
+# Per-run output: post session folders, and the web interface's web_cache/ and web_uploads/
 _workspace/
 
 # Notes for Claude sessions (project guidance and handover)

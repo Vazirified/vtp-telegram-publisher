@@ -3,6 +3,21 @@
 The channel template and the headline don't change from frame to frame, so they are drawn once
 by image_engine onto a transparent layer. ffmpeg then places each frame on its blurred copy with
 the numbers from image_engine.snippet_geometry() and puts that layer on top.
+
+Not run on its own. Used by the web interface (pipeline_service: probe, prepare_files when a video
+is uploaded or downloaded, render_channel_video as a background job) and by the terminal interface
+(main.py: probe, stage_video; image_engine.render_channel_assets: LoopingFrames in the area window,
+render_channel_video with terminal_progress).
+
+ffmpeg comes from the imageio-ffmpeg package, or from PATH (on Termux: pkg install ffmpeg).
+
+A video post's session folder holds, besides the texts:
+    raw_video.<ext>               the source video (extension from its container, see CONTAINER_EXTENSIONS)
+    video_frame.png               one frame: the "photo" for stills, the area of interest and thumbnails
+    video_preview.mp4             a small silent copy any browser can play, for the area editors
+    video_info.json               probe() details plus the frame's width and height
+    <channel>_broadcast.jpg       the channel's still (image_engine), sent as the video's thumbnail
+    <channel>_broadcast.mp4       the channel's video (render_channel_video)
 """
 import os
 import re
@@ -83,6 +98,8 @@ def source_filters(info):
     """
     filters = ["scale=trunc(iw*sar/2)*2:trunc(ih/2)*2", "setsar=1"]
     if info["hdr"]:
+        # Tone mapping: to linear light (100 nits = SDR white), BT.709 primaries in float RGB,
+        # the Hable curve compressing the highlights, then back to BT.709 gamma and TV range
         filters += ["zscale=t=linear:npl=100", "format=gbrpf32le", "zscale=p=bt709",
                     "tonemap=tonemap=hable:desat=0", "zscale=t=bt709:m=bt709:r=tv"]
     return filters
@@ -102,11 +119,17 @@ def extract_frame(video_path, out_path, info):
         return img.size
 
 def last_line(output):
+    """The last non-empty line of ffmpeg's output, usually the reason it failed."""
     lines = [l for l in output.strip().splitlines() if l.strip()]
     return lines[-1] if lines else "no details"
 
 def snippet_filters(frame_size, target_size, aoi):
-    """ffmpeg filters that turn a frame into the snippet image_engine.compose_image() pastes."""
+    """ffmpeg filters that turn a frame into the snippet image_engine.compose_image() pastes.
+
+    Each mode of snippet_geometry() maps to the Pillow steps it stands for: "fit" is ImageOps.fit,
+    "pad" is crop + ImageOps.pad, "crop" is resize + crop. Areas past the frame's edges become a
+    transparent pad around it first, as Pillow's crop() does outside an image.
+    """
     width, height = frame_size
     target_w, target_h = target_size
     geometry = image_engine.snippet_geometry(width, height, target_size, aoi)
@@ -134,7 +157,12 @@ def snippet_filters(frame_size, target_size, aoi):
                       f"crop={target_w}:{target_h}:{round(crop_x)}:{round(crop_y)}"]
 
 def filter_graph(info, frame_size, layout, aoi, blur_radius):
-    """The whole frame: blurred background, snippet, then the template and headline layer (input 1)."""
+    """The whole frame: blurred background, snippet, then the template and headline layer (input 1).
+
+    Input 0 (the video) is split in two: one copy fills the canvas and is blurred [bg], the other
+    becomes the snippet [fg], overlaid at raw_image_placement [base]. The template + headline
+    PNG goes on top and the result [out] is converted for H.264.
+    """
     placement = layout["raw_image_placement"]
     canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
     target_size = (placement["width"], placement["height"])
@@ -161,7 +189,9 @@ def render_channel_video(session_dir, channel_name, profile, video_path, info, f
     """Renders <channel>_broadcast.mp4, the video counterpart of image_engine.render_channel().
 
     info comes from probe(), frame_size from extract_frame(). on_progress(fraction) is called
-    while encoding. mute leaves the sound out. Returns {"path", "headline", "font_size", "fits"}.
+    while encoding. mute leaves the sound out; otherwise the first audio track (if any) is kept.
+    The template + headline layer is written to <channel>_overlay.png for ffmpeg and removed after.
+    Returns {"path", "headline", "font_size", "fits"}.
     """
     layout = profile["image_layout"]
     overlay = Image.open(os.path.join(PROJECT_ROOT, layout.get("template_overlay_path"))).convert("RGBA")
@@ -202,7 +232,8 @@ def end_progress_line(message):
     print(f"\r{message}".ljust(70))
 
 def stage_video(source_path, session_dir, info, on_progress=None):
-    """Copies a video into a post folder as raw_video.<ext> and prepares its files there."""
+    """Terminal interface: copies a video into a post folder as raw_video.<ext> and prepares its
+    files there (the web interface prepares them at upload, in pipeline_service)."""
     raw_path = os.path.join(session_dir, RAW_VIDEO + CONTAINER_EXTENSIONS.get(info["container"], DEFAULT_EXTENSION))
     shutil.copy2(source_path, raw_path)
     prepare_files(raw_path, os.path.join(session_dir, VIDEO_FRAME), os.path.join(session_dir, VIDEO_PREVIEW),
@@ -214,8 +245,9 @@ class LoopingFrames:
 
     ffmpeg loops the video (-stream_loop -1), turns it into fps frames per second and scales it.
     A thread takes one frame every 1/fps seconds and keeps it for latest(); ffmpeg waits while
-    the pipe is full, so only a few frames exist at a time, whatever the video's length. (Its
-    own -re pacing lets frames through in bursts each time a video starts over.) close() stops ffmpeg.
+    the pipe is full, so only a few frames exist at a time, whatever the video's length. ffmpeg's
+    own -re pacing isn't used: with -stream_loop it lets frames through in bursts each time the
+    video starts over. close() stops ffmpeg.
     """
     def __init__(self, video_path, size, fps=15):
         self.size = size
@@ -240,6 +272,7 @@ class LoopingFrames:
             next_frame = max(next_frame + 1 / self.fps, time.monotonic())
 
     def latest(self):
+        """The most recent frame (a PIL image), or None before the first one arrives."""
         return self.frame
 
     def close(self):
@@ -262,6 +295,8 @@ def encode(args, out_path, duration, on_progress, action):
 
     Writes to a .part file first, so a failed or stopped encode never replaces a good file.
     An exception raised by on_progress (e.g. to cancel) stops ffmpeg and is passed on.
+    ffmpeg's -progress output (key=value lines on stdout) gives out_time_us, the time encoded so far.
+    "+faststart" puts the index at the start of the MP4, so Telegram and browsers can stream it.
     """
     root, ext = os.path.splitext(out_path)
     part_path = f"{root}.part{ext}"

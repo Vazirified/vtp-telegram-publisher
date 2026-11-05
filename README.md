@@ -360,7 +360,7 @@ A template or font must be an existing file. To add a new one, copy it into `_co
 python kernel/inspect-emoji.py
 ```
 
-Logs in to Telegram and asks for a chat: `@username`, or `me` for Saved Messages. For each of the last 10 text messages it prints:
+Logs in to Telegram and asks for a chat: `@username`, or `me` for Saved Messages. For each of the last 10 messages that has text, it prints:
 - the text as Markdown and as HTML, with formatting and custom emoji as tags;
 - any reactions, with custom emoji IDs and ready-to-paste tags such as `<tg-emoji emoji-id="1234567890123456789">🌐</tg-emoji>`.
 

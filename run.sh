@@ -1,6 +1,12 @@
 #!/bin/bash
+# Starts the VTP terminal + window interface (kernel/main.py) on Linux or Termux (under Termux:X11):
+# bash run.sh
+# Offers to run setup.sh when .venv is missing. After each post it asks whether to run again
+# (yes after 5 seconds). Answering N at the first question opens a shell inside the virtual
+# environment instead, e.g. to run kernel/publisher.py or kernel/configurator.py by hand.
+# Don't run it together with run-web.sh: the Telegram session allows one program at a time.
 
-# Force the current working directory to match the script's actual location
+# Run from the project folder, wherever the script is called from
 cd "$(dirname "$0")"
 
 echo "========================================================"
@@ -28,13 +34,13 @@ if [ ! -f ".venv/bin/activate" ]; then
     fi
 fi
 
-# Step 2: Safe activation of the virtual environment container
+# Step 2: Activate the virtual environment
 echo "[->] Initializing isolated environment runtime..."
 source .venv/bin/activate
 echo "[OK] Environment sandbox is live."
 echo ""
 
-# Step 3: Interactive Prompt Routing with 5-Second Auto-Timeout
+# Step 3: Ask whether to start main.py; no answer within 5 seconds means yes
 # -t 5 sets the timer. -n 1 captures a single keystroke.
 read -t 5 -n 1 -p "[?] Launch master orchestrator? [Y/n] (Auto-launching in 5s): " exec_choice
 echo ""
@@ -55,13 +61,13 @@ if [[ "$exec_choice" =~ ^[Nn]$ ]]; then
     # Drop the user into a bash shell with the venv still active
     exec bash
 else
-    # Continuous Execution Loop
+    # Run main.py (one post per run) until the user answers N to the relaunch question
     while true; do
         echo ""
         echo "--------------------------------------------------------"
         echo "[->] Launching master pipeline..."
         echo "--------------------------------------------------------"
-        # Added the -B flag as a secondary safeguard against __pycache__ folders
+        # -B: don't write __pycache__ folders (main.py also turns this off itself)
         python3 -B kernel/main.py
         echo "--------------------------------------------------------"
         echo "[i] Script execution complete."

@@ -1,3 +1,26 @@
+"""Terminal menu for editing _config/channels.json: add, edit, delete and list channels, and set
+the review channel (catch_all_channel). Not used by the web interface.
+
+    python kernel/configurator.py
+
+Changes are kept in memory and written only by "0. Save & Exit"; Ctrl+C discards them.
+Each prompt shows its current value in brackets; Enter keeps it. Templates and fonts are picked
+from _config/templates/ and _config/fonts/ (or typed as a path relative to the project root).
+
+A channel entry, as written by configure_channel():
+    chat_id               @username, numeric ID or "me", where the post is published
+    language              en, fa, ar, ckb...: which <lang>.md the image and caption use
+    is_rtl                right-to-left headline (shaping and default alignment)
+    image_layout          canvas_size (always the template's size), template_overlay_path,
+                          raw_image_placement {x, y, width, height}: where the photo goes,
+                          headline_safe_area {x_start, y_start, width, max_height, font_path,
+                          font_size, font_color, alignment, line_spacing, max_lines}
+    caption_settings      header_template, footer_template: Telegram HTML around the caption
+                          (see publisher.build_caption)
+
+An edited channel is rebuilt from these keys, so keys the program doesn't read (such as the
+old resize_mode and font_weight) are dropped from it.
+"""
 import os
 import json
 
@@ -8,18 +31,25 @@ from common import PROJECT_ROOT, CONFIG_FILE
 CONFIG_DIR = os.path.dirname(CONFIG_FILE)
 
 def load_config():
+    """The current channels.json, or an empty configuration when there is none yet."""
     if not os.path.exists(CONFIG_FILE):
         return {"catch_all_channel": "", "channels": {}}
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
 def save_config(config):
+    """Writes channels.json (UTF-8, non-ASCII kept readable)."""
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     print("\n[+] Configuration saved successfully!")
 
 def prompt(text, default=None, cast_type=str):
+    """Asks until the answer converts to cast_type; Enter returns default.
+
+    With no default, a text field may be left empty but a number may not. For bool, true, t, y,
+    yes and 1 mean yes; anything else means no.
+    """
     default_text = f" [{default}]" if default is not None else ""
     while True:
         val = input(f"{text}{default_text}: ").strip()
@@ -37,7 +67,10 @@ def prompt(text, default=None, cast_type=str):
             print(f"  [!] Invalid input. Please enter a valid {cast_type.__name__}.")
 
 def choose_asset(subdir, extensions, label, current=None):
-    """Lists the files in _config/<subdir> and returns the chosen one as a project-relative path."""
+    """Lists the files in _config/<subdir> and returns the chosen one as a project-relative path.
+
+    A typed path must be an existing file relative to the project root.
+    """
     folder = os.path.join(CONFIG_DIR, subdir)
     files = sorted(f for f in os.listdir(folder) if f.lower().endswith(extensions)) if os.path.isdir(folder) else []
 
@@ -67,6 +100,10 @@ def template_canvas_size(template_path, fallback):
         return fallback
 
 def configure_channel(existing=None):
+    """Asks every setting of a channel, offering the existing values (or defaults) as answers.
+
+    Returns a new channel entry (see the module docstring for what each key means).
+    """
     existing = existing or {}
     layout = existing.get("image_layout", {})
     safe_area = layout.get("headline_safe_area", {})
@@ -98,7 +135,7 @@ def configure_channel(existing=None):
     font_color = prompt("Font Color (Hex Code)", safe_area.get("font_color", "#ffffff"))
     alignment = prompt("Text Alignment (left/center/right)", safe_area.get("alignment", "center"))
 
-    # Updated default to 1.1
+    # Line height = font size x this; 1.1 is also image_engine's default
     line_spacing = prompt("Line Spacing Multiplier", safe_area.get("line_spacing", 1.1), float)
     max_lines = prompt("Max Allowed Lines", safe_area.get("max_lines", 2), int)
 
@@ -132,6 +169,7 @@ def configure_channel(existing=None):
     }
 
 def main():
+    """The menu loop. Nothing is written until option 0."""
     config = load_config()
 
     while True:

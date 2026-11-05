@@ -1,3 +1,10 @@
+"""Creates the Telethon client every VTP tool uses to reach Telegram.
+
+Reads _credentials/telegram_api.json ({"api_id": ..., "api_hash": ...}, from my.telegram.org)
+and keeps the login in _credentials/user_session.session. That session file can be open in only
+one program at a time: run the web interface or the terminal tools (main.py, publisher.py,
+inspect-emoji.py), not both. Used by the terminal tools and by telegram_service (web interface).
+"""
 import os
 import json
 from telethon import TelegramClient
@@ -9,9 +16,10 @@ CREDENTIALS_FILE = os.path.join(CREDENTIALS_DIR, "telegram_api.json")
 SESSION_FILE = os.path.join(CREDENTIALS_DIR, "user_session")
 
 def get_client():
-    """
-    Initializes and returns an authenticated TelegramClient.
-    Ensures the _credentials directory exists before attempting to load or create files.
+    """Returns a TelegramClient for the saved API ID and hash, or None (with an [ERROR] line) if they're missing.
+
+    The client is not connected yet. Callers connect it; when the session isn't logged in, the
+    terminal tools let Telethon ask for phone and code, and the web interface logs in on its Setup page.
     """
     # Ensure the _credentials directory exists
     if not os.path.exists(CREDENTIALS_DIR):
@@ -39,7 +47,6 @@ def get_client():
             print("[ERROR] 'api_id' or 'api_hash' missing from JSON file.")
             return None
 
-        # Initialize client
         client = TelegramClient(SESSION_FILE, api_id, api_hash)
         return client
 

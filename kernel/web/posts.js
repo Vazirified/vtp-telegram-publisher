@@ -1,8 +1,16 @@
 "use strict";
-// The pipeline pages: the post list, a new post, and one post's texts, images, captions and publishing.
-// Uses the helpers from app.js (api, h, sanitizeTelegramHtml, ...).
+// The Posts tab of the web interface: the pages that make and publish a post.
+//   #/posts           renderPosts(): every post (session folder), newest first
+//   #/post/new        NewPostView: text + photo or video -> Gemini translation -> new post
+//   #/post/<name>     PostView: one post in four foldable sections:
+//                     1. Texts, 2. Images (or Video), 3. Captions, 4. Publish
+// Loaded after app.js as a classic script and shares its globals: the helpers (api, h, avatar,
+// sanitizeTelegramHtml, timeFormat, viewRoot, telegramReady), `app` (routing, the New post draft),
+// and ChatPane, which shows the review chat and the published posts here.
+// The server side is webapp.py (/api/sessions..., /api/uploads...) over pipeline_service.py.
 
 const sessionUrl = (name, path = "") => `/api/sessions/${encodeURIComponent(name)}${path}`;
+// `version` (the file's modification time) changes the URL after a new render, so the browser doesn't show a cached copy
 const sessionFileUrl = (name, file, version) => sessionUrl(name, `/files/${encodeURIComponent(file)}`) + (version ? `?v=${version}` : "");
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
 
@@ -63,6 +71,7 @@ async function withButton(button, busyText, action, errorEl) {
 // ==========================================
 // POST LIST
 // ==========================================
+/** The Posts tab: each post with its thumbnail, date and how far it got (rendered, previews sent, published). */
 async function renderPosts() {
   const page = h("div", { class: "page wide" },
     h("div", { class: "page-head" },
@@ -126,6 +135,13 @@ function uploadedVideo(url, fileName) {
   video.play().catch(() => { /* shown paused */ });
   return video;
 }
+
+/**
+ * The New post page. Its draft lives in `app.draft`: the text and the photos/videos offered come from the
+ * messages selected in the Telegram tab ("Start post"), or the text is pasted and a file uploaded.
+ * Creating the post first turns the chosen photo or video into an upload token (/api/uploads...), then
+ * asks the server to translate the text and create the session folder, and opens the new post.
+ */
 class NewPostView {
   async mount() {
     // The draft survives switching tabs, so a failed translation can be retried with another model
@@ -161,6 +177,7 @@ class NewPostView {
     this.loadModels();
   }
 
+  /** The tiles to choose from: photos and videos of the selected messages, an uploaded file, and the upload button. */
   renderPhotos() {
     const draft = this.draft;
     const chosen = draft.chosen;
@@ -203,6 +220,7 @@ class NewPostView {
     this.photoGrid.replaceChildren(hint, h("div", { class: "photo-tiles" }, tiles));
   }
 
+  /** Fills the model list; the last used model is selected (and kept even if the list no longer has it). */
   async loadModels() {
     const result = await api("/api/gemini/models").catch((e) => ({ models: [], last: null, error: e.message }));
     const models = result.models.slice();
@@ -213,6 +231,7 @@ class NewPostView {
     this.modelNote.className = result.error ? "warn small" : "muted small";
   }
 
+  /** "Translate and create post": uploads (or downloads from Telegram) the chosen file, then creates the post. */
   async submit(button) {
     const draft = this.draft;
     const show = (message) => {
@@ -257,8 +276,8 @@ class NewPostView {
 // ==========================================
 // ONE POST
 // ==========================================
-// Margin around the photo in the area editor, as a fraction of the photo's size. Like the terminal
-// version's grid, the area may extend into it to add space around the subject.
+// Margin around the photo in the area editor, on each side, as a fraction of the photo's size. Like the
+// terminal version's grid, the area may extend into it to add space around the subject.
 const AOI_MARGIN = 0.25;
 
 // Which post sections were last left open, kept in this browser for every post
@@ -291,6 +310,12 @@ function postSection(key, title, defaultOpen) {
   return { card, body };
 }
 
+/**
+ * One post's page. `detail` is what /api/sessions/<name> returns; actions that change the post answer
+ * with fresh details, applied by update(). Each section has its own render function that redraws only
+ * that section's body. Background jobs (sending previews, publishing, rendering videos) report through
+ * live "job" events, which app.js passes to onJob().
+ */
 class PostView {
   constructor(name) {
     this.name = name;
@@ -305,8 +330,10 @@ class PostView {
     this.chosenChannels = new Set(); // none ticked at first: picking a few is quicker than unticking most
     this.channelCards = new Map(); // channel -> its card in section 2, replaced alone when its video is done
     this.renderStatus = new Map(); // channel -> where a video post's card shows how its render is going
+    // this.lastVideoJob (set by onVideoJob) keeps the latest video job after it ends, so a failed channel keeps its error
   }
 
+  /** Loads the post and builds the page: a head and the four sections, each filled by its render function. */
   async mount() {
     viewRoot().replaceChildren(h("div", { class: "page wide" }, h("p", { class: "muted" }, "Loading post...")));
     try {
@@ -350,6 +377,7 @@ class PostView {
     this.loadReviewChat();
   }
 
+  /** Called before another page replaces this one: saves pending edits and stops the views timer. */
   leave() {
     for (const saver of this.savers) saver.flush();
     clearInterval(this.viewsTimer);
@@ -372,6 +400,7 @@ class PostView {
   }
 
   // ---------------------------------------------------------------- 1. texts
+  /** One foldable editor per language (<lang>.md: headline + body), saved as you type. Drawn once, at mount. */
   renderTexts() {
     const card = this.textsCard;
     card.replaceChildren(
@@ -401,6 +430,10 @@ class PostView {
   }
 
   // ---------------------------------------------------------------- 2. images
+  /**
+   * The area editor, blur (and for video posts mute) with the Render button, then a card per channel.
+   * Area, blur and mute are kept in this.renderOptions and only sent to the server with Render.
+   */
   renderImages() {
     const card = this.imagesCard;
     const d = this.detail;
@@ -451,6 +484,12 @@ class PostView {
         : "This video has no sound."));
   }
 
+  /**
+   * The area of interest: drag a box over the photo (or the looping video) to mark what must stay visible.
+   * The frame is the photo plus AOI_MARGIN on every side, so it has the photo's shape and is `scale` times
+   * its size; the photo sits in the middle (its position is in .aoi-photo in style.css). The area is kept
+   * in photo pixels as [left, top, right, bottom] and may reach into the margin (negative or past the size).
+   */
   aoiEditor() {
     const { file, version, width, height } = this.detail.raw_image;
     const video = this.detail.video;
@@ -472,7 +511,8 @@ class PostView {
       ? loopingVideo(sessionFileUrl(this.name, video.file, video.version), sessionFileUrl(this.name, file, version), "aoi-photo")
       : h("img", { class: "aoi-photo", src: sessionFileUrl(this.name, file, version), alt: "", draggable: "false" }), rect);
 
-    // Frame coordinates (0..1) <-> photo pixels; the photo sits in the middle of the margin
+    // Frame coordinates (0..1) <-> photo pixels. In fractions of the photo, the frame's edges are at
+    // -AOI_MARGIN and 1 + AOI_MARGIN; toPercent() is the reverse, for placing the box
     const toPhoto = (event) => {
       const box = frame.getBoundingClientRect();
       const fx = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
@@ -480,6 +520,7 @@ class PostView {
       return [(fx * scale - AOI_MARGIN) * width, (fy * scale - AOI_MARGIN) * height];
     };
     const toPercent = (x, size) => ((x / size + AOI_MARGIN) / scale) * 100;
+    // Shows an area (photo pixels) as the highlighted box, or hides the box for null
     const draw = (aoi) => {
       rect.hidden = !aoi;
       if (!aoi) return;
@@ -498,6 +539,7 @@ class PostView {
         : `Drag on the ${noun} to mark the area that must stay visible. The dark margin can be included to add space. Without an area the ${noun} is center-cropped.`;
     };
 
+    // Pointer events work for mouse, pen and touch; capturing the pointer keeps the drag going outside the frame
     let start = null;
     frame.addEventListener("pointerdown", (event) => {
       frame.setPointerCapture(event.pointerId);
@@ -525,6 +567,11 @@ class PostView {
     return h("div", { class: "aoi-editor" }, frame, note, clear);
   }
 
+  /**
+   * A channel's card: its image (or video), warnings, and the headline fixes. Shrink font and Shorten
+   * with Gemini appear only when the headline doesn't fit; Edit image headline changes the image only
+   * (the caption keeps the full headline). Each fix re-renders that channel (and its video).
+   */
   channelImageCard(c) {
     const error = h("p", { class: "error", hidden: true });
     const act = (button, busy, path, json) => withButton(button, busy, async () => {
@@ -614,6 +661,7 @@ class PostView {
       status);
   }
 
+  /** Under a video post's still: render progress, "Waiting...", or why there's no current video, with "Render video". */
   showRenderStatus(c, status) {
     const job = this.jobs.get("videos");
     if (this.videoPending(c)) {
@@ -644,6 +692,10 @@ class PostView {
   }
 
   // ---------------------------------------------------------------- 3. captions
+  /**
+   * One editor per channel (<channel>_caption.txt, Telegram HTML) with a live preview, saved as you type.
+   * The preview goes through sanitizeTelegramHtml, so only Telegram's tags are shown, never raw HTML.
+   */
   renderCaptions() {
     const card = this.captionsCard;
     card.replaceChildren(
@@ -687,6 +739,10 @@ class PostView {
   }
 
   // ---------------------------------------------------------------- 4. publish
+  // The section has three parts: the publish controls (redrawn on every progress update), the published
+  // posts, and the review chat. The last two keep their elements, so loaded messages and scrolling survive.
+
+  /** Finds the review channel (catch_all_channel) among the Telegram shortcuts, to show it as a chat. */
   async loadReviewChat() {
     if (!telegramReady() || !this.detail.review_channel || this.reviewChat) return;
     try {
@@ -773,6 +829,7 @@ class PostView {
     }
   }
 
+  /** A card holding one published message in a ChatPane, with the channel's name and picture once loaded. */
   publishedCard(c) {
     const { chat_id: chatId, msg_id: msgId } = c.published;
     const box = h("div", { class: "messages single-post" });
@@ -791,6 +848,7 @@ class PostView {
     return { card, pane };
   }
 
+  /** Telegram connected or disconnected: the parts that need it are redrawn. */
   onTelegramStatus() {
     this.renderPublish();
     this.renderPublished();
@@ -798,6 +856,7 @@ class PostView {
     this.loadReviewChat();
   }
 
+  /** A live Telegram update (new/edited/deleted message, reactions): passed to the chats on this page. */
   onUpdate(update) {
     if (this.reviewPane) this.reviewPane.onUpdate(update);
     for (const { pane } of this.publishedCards.values()) pane.onUpdate(update);
@@ -816,6 +875,7 @@ class PostView {
     return link;
   }
 
+  /** A Preview or Live cell: the running send's progress for this channel, else the last result from the publish log. */
   sendResult(c, kind) {
     const job = this.jobs.get(kind);
     if (job && job.channels.includes(c.name)) {
@@ -832,6 +892,10 @@ class PostView {
     return this.sentLink(logged.chat_id, logged.msg_id, `✓ ${time} · view`);
   }
 
+  /**
+   * The channel table (tick boxes, preview and live results) and the two send buttons. Ticks are kept in
+   * this.chosenChannels across redraws; nothing can be ticked or sent while a send is running.
+   */
   renderPublish() {
     if (!this.publishControls) return;
     const card = this.publishControls;
@@ -920,6 +984,7 @@ class PostView {
       h("div", { class: "btn-row" }, previewButton, publishButton));
   }
 
+  /** A "job" event (for any post; others are ignored): send progress, or video render progress. */
   onJob(job) {
     if (job.session !== this.name) return;
     if (job.kind === "videos") {

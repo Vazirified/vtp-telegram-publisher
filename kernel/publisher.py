@@ -1,3 +1,22 @@
+"""Publishing phase: builds each channel's caption and sends its image (or video) to Telegram.
+
+Flow: captions are made from <lang>.md into <channel>_caption.txt (existing files are kept, so
+hand edits survive), the user picks channels, previews go to the review channel
+(catch_all_channel), and after approval each channel's post goes to its chat_id. Files are
+read from disk at every send, so captions and images can be fixed between previews.
+
+- Terminal interface: main.py calls main(session_dir) at the end of a run. Run on its own, it
+  publishes the LATEST session folder in _workspace/:
+      python kernel/publisher.py
+- Web interface: pipeline_service/webapp use the non-interactive parts: build_caption,
+  parse_target, send_previews and publish_live (with on_sent for progress).
+
+Session files read: <channel>_broadcast.jpg (or, for a video post, <channel>_broadcast.mp4 with
+the .jpg as thumbnail and video_info.json for its duration), <channel>_caption.txt, <lang>.md.
+
+Settings read from _config/channels.json: catch_all_channel, and per channel: chat_id,
+language, caption_settings.header_template and caption_settings.footer_template.
+"""
 import io
 import os
 import random
@@ -5,10 +24,10 @@ import asyncio
 import re
 import sys
 
-# Tell Python NOT to write .pyc files or __pycache__ folders
+# No .pyc files or __pycache__ folders in the project
 sys.dont_write_bytecode = True
 
-# Import existing auth manager (assumed to be in the same directory)
+# Telethon client with the saved login (_credentials/)
 import auth_manager
 # Imported before PIL so the bundled FriBiDi is on PATH
 from common import load_channels_config, get_latest_session_directory, find_raw_video, load_video_info
@@ -19,9 +38,10 @@ from telethon.tl.types import DocumentAttributeVideo
 THUMBNAIL_SIZE = 320
 
 def parse_target(target):
-    """
-    Smart Parser: Safely converts string-based numerical IDs into true Integers for Telethon,
-    while leaving standard @usernames and 'me' untouched.
+    """Turns a chat_id / catch_all_channel value into what Telethon expects.
+
+    Numeric IDs written as strings ("-100...") become ints; @usernames and 'me' (Saved Messages)
+    stay strings. Empty values give None.
     """
     if not target:
         return None
@@ -33,14 +53,18 @@ def parse_target(target):
     return target
 
 def build_caption(md_path, profile):
-    """Stitches the channel's header, the bold headline, the body and the footer into caption HTML."""
+    """Stitches the channel's header, the bold headline, the body and the footer into caption HTML.
+
+    Layout: "<header> <b>headline</b>", blank line, body, blank line, footer. The templates are
+    Telegram HTML (custom emoji as <tg-emoji> tags) and may contain a literal \\n for a line break.
+    """
     with open(md_path, "r", encoding="utf-8") as f:
         lines = f.readlines()
 
     headline = lines[0].lstrip("#").strip() if lines else ""
     body = "".join(lines[1:]).strip()
 
-    # Parse headers/footers and fix JSON escaped newlines
+    # A "\n" typed in the configurator is stored as backslash + n; turn it into a real line break
     captions_cfg = profile.get("caption_settings", {})
     header = captions_cfg.get("header_template", "").replace("\\n", "\n").strip()
     footer = captions_cfg.get("footer_template", "").replace("\\n", "\n").strip()
@@ -51,10 +75,10 @@ def build_caption(md_path, profile):
         head_block += header
     if headline:
         if head_block:
-            head_block += " " # Add a single space separation if header exists
+            head_block += " "
         head_block += f"<b>{headline}</b>"
 
-    # Compile final layout blocks
+    # Blocks separated by a blank line; empty ones are left out
     final_text = []
     if head_block: final_text.append(head_block)
     if body: final_text.append(body)
@@ -68,9 +92,10 @@ def build_caption(md_path, profile):
     return compiled_caption
 
 def generate_all_caption_files(session_dir, config):
-    """
-    Stitches header, headline, body, and footer for EVERY channel defined in config.
-    Saves them to editable .txt files in the session subdirectory.
+    """Terminal interface: writes <channel>_caption.txt with build_caption() for every channel.
+
+    A caption file that already exists is left alone, so edits made to it are kept. Delete it
+    to have it made again from <lang>.md.
     """
     print("\n[~] Pre-generating editable caption files for ALL channels...")
     channels = config.get("channels", {})
@@ -81,7 +106,6 @@ def generate_all_caption_files(session_dir, config):
         md_path = os.path.join(session_dir, f"{lang}.md")
         txt_path = os.path.join(session_dir, f"{channel_internal_name}_caption.txt")
 
-        # Skip if the user has already generated/edited the file (preserving manual edits)
         if os.path.exists(txt_path):
             continue
 
@@ -91,13 +115,15 @@ def generate_all_caption_files(session_dir, config):
 
         compiled_caption = build_caption(md_path, profile)
 
-        # Save to session directory
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(compiled_caption)
         print(f"  [+] Created: {channel_internal_name}_caption.txt")
 
 def select_channels_ui(channels_dict):
-    """Provides a Terminal UI for selecting channels."""
+    """Terminal interface: lists the channels (alphabetically) and returns the chosen names.
+
+    Accepts numbers separated by commas, or A for all; anything else selects nothing.
+    """
     print("\n========================================================")
     print("  TELEGRAM PUBLISHER: TARGET SELECTION")
     print("========================================================")
@@ -123,7 +149,8 @@ def select_channels_ui(channels_dict):
         return []
 
 def video_thumbnail(still_path):
-    """The channel's still (its rendered image) as the video's thumbnail."""
+    """The channel's still (its rendered image) as the video's thumbnail: an in-memory JPEG of at
+    most THUMBNAIL_SIZE px; Telethon takes the file name from .name."""
     with Image.open(still_path) as img:
         thumb = img.convert("RGB")
     thumb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE))
@@ -153,9 +180,11 @@ def video_send_options(session_dir, still_path):
     }
 
 async def compile_and_send_post(client, target_peer, session_dir, channel_internal_name, log_prefix=""):
-    """Reloads the LATEST image (a video post: video) and text from disk and sends them via Telethon.
+    """Sends one channel's post: its image (a video post: video) with the caption as HTML.
 
-    Returns the sent message, or None if a file is missing or sending failed.
+    Both are read from disk now, so the latest edits are sent. A post is a video post when the
+    session folder has a raw_video.* file. Returns the sent message, or None if a file is missing
+    or sending failed (the error is printed, not raised).
     """
     img_path = os.path.join(session_dir, f"{channel_internal_name}_broadcast.jpg")
     txt_path = os.path.join(session_dir, f"{channel_internal_name}_caption.txt")
@@ -198,6 +227,7 @@ async def send_previews(client, catch_all_gate, session_dir, channel_names, on_s
     """Sends each channel's post to the review channel. Returns {channel: sent message or None}.
 
     on_sent(channel, message or None) is called after each channel, e.g. to show progress.
+    Sends are 3-8 s apart (random), to stay within Telegram's flood limits.
     """
     print(f"\n[~] Dispatching previews to Catch-All Gate ({catch_all_gate})...")
     sent = {}
@@ -213,6 +243,8 @@ async def publish_live(client, channels_dict, session_dir, channel_names, on_sen
     """Posts each channel's post to its live chat_id. Returns {channel: sent message or None}.
 
     on_sent(channel, message or None) is called after each channel, e.g. to show progress.
+    A channel without chat_id is skipped (None). Sends are 5-10 s apart (random), for Telegram's
+    flood limits.
     """
     print("\n========================================================")
     print("  INITIATING LIVE BROADCAST")
@@ -220,7 +252,6 @@ async def publish_live(client, channels_dict, session_dir, channel_names, on_sen
 
     sent = {}
     for ch_name in channel_names:
-        # Safely parse the Live Chat ID
         raw_chat_id = channels_dict[ch_name].get("chat_id")
         live_chat_id = parse_target(raw_chat_id)
 
@@ -245,7 +276,12 @@ async def publish_live(client, channels_dict, session_dir, channel_names, on_sen
     return sent
 
 async def main(session_dir=None):
-    """Publishes the given session, or the latest one when run on its own."""
+    """Terminal interface: publishes the given session, or the latest one when run on its own.
+
+    Makes missing captions, asks for the channels, then loops: previews to catch_all_channel
+    (skipped when it's empty), and [A]pprove (publish live), [R]etry (send the previews again,
+    e.g. after editing a caption file) or [S]tall (exit without publishing).
+    """
     session_dir = session_dir or get_latest_session_directory()
     if not session_dir:
         print("[ERROR] No session directory found inside _workspace.")
@@ -273,7 +309,7 @@ async def main(session_dir=None):
         print("[ERROR] Could not initialize client via auth_manager.")
         return
 
-    # Safely parse the Catch-All Gate ID
+    # The review channel; previews are skipped when it isn't set
     catch_all_gate = parse_target(config.get("catch_all_channel"))
     final_approval_granted = False
 

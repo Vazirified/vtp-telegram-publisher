@@ -1,6 +1,13 @@
 #!/bin/bash
+# VTP setup for Linux (desktop or server). Run once from the project folder: bash setup.sh
+# - Installs the FriBiDi system library if missing (needs root or sudo).
+# - Creates the Python virtual environment in .venv and installs requirements.txt into it.
+# - Reports whether Pillow's Raqm text layout works (needed for correct Kurdish/Persian/Arabic headlines).
+# Afterwards start VTP with run-web.sh (web interface) or run.sh (terminal + window interface).
+# Running it again is safe: it reuses .venv and only installs what's missing or outdated.
+# On Android use setup-termux.sh instead; on Windows, setup.bat.
 
-# Prevent Windows line-ending issues if edited on PC
+# Stop at the first command that fails
 set -e
 
 # Force the current working directory to match the script's actual location
@@ -65,11 +72,11 @@ PYTHON_BIN=$(command -v python3 || command -v python)
 echo "[~] Activating virtual environment..."
 source .venv/bin/activate
 
-# Step 4: Upgrade pip inside the sandbox
+# Step 4: Upgrade pip inside the virtual environment
 echo "[~] Upgrading pip to the latest version..."
 pip install --upgrade pip
 
-# Step 5: Install the Python dependencies
+# Step 5: Install the Python packages listed in requirements.txt (imageio-ffmpeg brings its own ffmpeg)
 echo "[~] Installing required pipeline engines..."
 pip install -r requirements.txt
 

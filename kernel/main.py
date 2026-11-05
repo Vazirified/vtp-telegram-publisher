@@ -1,5 +1,23 @@
+"""Terminal + window interface: runs one post from source text to published Telegram posts.
+
+Started by run.bat (Windows) or run.sh (Linux, Termux), which activate .venv and run
+    python -B kernel/main.py
+The web interface (webapp.py, run-web.bat / run-web.sh) is the other front end over the same
+engines and session folders; it doesn't use this file. Both use the same Telegram login, so
+only one of them can run at a time.
+
+Phases:
+  1. Ingestion window (Tkinter, run_ingestion_gui): the news text, pasted or fetched from a
+     Telegram chat, and a photo or video, picked from disk or downloaded from a chat.
+  2. Text (text_engine.execute_text_pipeline): Gemini translation into a new session folder,
+     _workspace/session_<timestamp>_<slug>/ with one <lang>.md per language.
+  3. Graphics (image_engine.render_channel_assets): the photo is copied in as raw_image.<ext>
+     (a video: video_engine.stage_video, raw_video.<ext> and its prepared files) and every
+     channel's image (and video) is rendered.
+  4. Publishing (publisher.main): captions, previews to the review channel, approval, live posts.
+"""
 import sys
-# Prevent the creation of __pycache__ folders
+# No .pyc files or __pycache__ folders in the project
 sys.dont_write_bytecode = True
 
 import os
@@ -10,7 +28,8 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-# --- Import Core Engines ---
+# The engines; auth_manager imports common first, which puts the bundled FriBiDi on PATH
+# before image_engine loads Pillow
 try:
     import auth_manager
     import text_engine
@@ -24,7 +43,7 @@ except ImportError as e:
 
 from common import WORKSPACE_DIR
 
-# --- GLOBAL UI COLOR & FONT CONFIGURATION (DARK MODE) ---
+# Dark theme colours and fonts of the ingestion window
 BG_MAIN = "#1e1e1e"        # Main window background
 BG_SEC = "#2d2d2d"         # Inputs and list backgrounds
 FG_MAIN = "#e0e0e0"        # Main text color
@@ -68,7 +87,9 @@ def run_telegram_task(task, callback, error_callback):
     """Runs `await task(client)` with a fresh Telegram client on a background thread.
 
     The task's return value is passed to callback. A missing client or any exception
-    is passed to error_callback as a message string.
+    is passed to error_callback as a message string. Each task connects and disconnects on its
+    own, so the window never holds the Telegram session while the later phases need it.
+    The callbacks run on the background thread and update Tk widgets from there.
     """
     def run_async():
         async def run():
@@ -95,7 +116,7 @@ def run_telegram_task(task, callback, error_callback):
     threading.Thread(target=run_async, daemon=True).start()
 
 def fetch_telegram_dialogs_async(callback, error_callback, offset_date=None):
-    """Fetches the 30 most recent chats/dialogs, supporting pagination via offset_date."""
+    """Fetches 30 chats, newest first; offset_date (the last chat's date) gives the next page."""
     async def fetch(client):
         kwargs = {'limit': 30}
         if offset_date: kwargs['offset_date'] = offset_date
@@ -109,7 +130,10 @@ def fetch_telegram_dialogs_async(callback, error_callback, offset_date=None):
     run_telegram_task(fetch, callback, error_callback)
 
 def fetch_telegram_messages_async(target_entity_id, callback, error_callback, offset_id=0):
-    """Fetches the last 20 text messages for the Text Ingestion UI."""
+    """Fetches the text messages among a chat's next 20 messages, newest first, for the text browser.
+
+    offset_id (the last message's ID) gives the next page.
+    """
     async def fetch(client):
         entity = await client.get_entity(target_entity_id)
         kwargs = {'limit': 20}
@@ -125,7 +149,10 @@ def fetch_telegram_messages_async(target_entity_id, callback, error_callback, of
     run_telegram_task(fetch, callback, error_callback)
 
 def fetch_telegram_media_context_async(target_entity_id, callback, error_callback, offset_id=0):
-    """Fetches all messages (text and media) to provide conversation context for finding files."""
+    """Fetches a chat's next 20 messages with text or a file, for the media browser.
+
+    Text-only messages are listed too (greyed out) so the files can be found by their context.
+    """
     async def fetch(client):
         entity = await client.get_entity(target_entity_id)
         kwargs = {'limit': 20}
@@ -153,7 +180,10 @@ def fetch_telegram_media_context_async(target_entity_id, callback, error_callbac
     run_telegram_task(fetch, callback, error_callback)
 
 def download_telegram_media_async(target_entity_id, message_id, callback, error_callback):
-    """Downloads a specific photo or document message to the workspace folder."""
+    """Downloads a message's photo or file into _workspace/ and returns its path.
+
+    The file stays there; the pipeline copies it into the session folder.
+    """
     async def download(client):
         entity = await client.get_entity(target_entity_id)
         msg = await client.get_messages(entity, ids=message_id)
@@ -216,10 +246,12 @@ class PagedBrowser:
         self.load()
 
     def load(self):
+        """Fetches the next page ("Load More")."""
         if self.load_btn: self.load_btn.config(text="Loading...", state="disabled")
         self.fetch(self.cursor, self.on_success, self.on_error)
 
     def restore_trigger(self):
+        """Gives the button that opened this browser its label back (stored in _original_text)."""
         self.trigger_btn.config(text=self.trigger_btn._original_text, state="normal")
 
     def build_window(self):
@@ -288,16 +320,21 @@ class PagedBrowser:
 
 
 def run_ingestion_gui():
+    """Phase 1: the ingestion window. Returns (text, photo or video path), or (None, None) if closed.
+
+    Section 1 is the source text (typed, pasted or fetched from chosen Telegram messages), section 2
+    the photo or video (Browse Local, or Fetch from Telegram, which downloads it into _workspace/).
+    """
     root = tk.Tk()
     root.title("EPLANET Pipeline: Data Ingestion")
 
-    # --- DYNAMIC SCREEN QUADRANT LOGIC ---
+    # The window and the browsers it opens take the top-left quarter of the screen
     screen_w = root.winfo_screenwidth()
     screen_h = root.winfo_screenheight()
     quad_w = screen_w // 2
     quad_h = screen_h // 2
 
-    # Format: "width x height + x_offset + y_offset"
+    # "<width>x<height>+<x>+<y>"
     quadrant_geometry = f"{quad_w}x{quad_h}+0+0"
     root.geometry(quadrant_geometry)
 
@@ -324,9 +361,10 @@ def run_ingestion_gui():
     payload = {"text": None, "image_path": None}
 
     # ==========================================
-    # 1. CHAT / DIALOG BROWSER
+    # CHAT BROWSER (first step of both Fetch buttons)
     # ==========================================
     def create_dialog_browser(title, next_step_callback, trigger_btn):
+        """Lists chats; choosing one calls next_step_callback(chat_id, chat_name)."""
         def on_select(browser):
             selected_items = browser.tree.selection()
             if not selected_items: return
@@ -353,7 +391,7 @@ def run_ingestion_gui():
 
 
     # ==========================================
-    # 2. TEXT INGESTION SECTION
+    # 1. SOURCE TEXT
     # ==========================================
     text_header_frame = tk.Frame(root, bg=BG_MAIN)
     text_header_frame.pack(fill="x", pady=(0, 5))
@@ -367,11 +405,13 @@ def run_ingestion_gui():
     text_input.pack(pady=5, fill="both", expand=True)
 
     def open_message_browser(dialog_id, dialog_name):
+        """Lists a chat's text messages; "Insert Selected" appends them to the text box."""
         def add_multi_select_toggle(browser):
             browser.multi_select_var = tk.BooleanVar(value=True)
             tk.Checkbutton(browser.win, text="Easy Multi-Select (Click to toggle, no Ctrl needed)", variable=browser.multi_select_var, font=FONT_SMALL, bg=BG_MAIN, fg=FG_MAIN, selectcolor=BG_SEC, activebackground=BG_MAIN, activeforeground=FG_MAIN).pack(anchor="w", padx=10, pady=(0, 5))
 
         def bind_click_toggle(browser):
+            # With "Easy Multi-Select" on, a click toggles a row instead of replacing the selection
             tree = browser.tree
 
             def on_tree_click(event):
@@ -417,7 +457,7 @@ def run_ingestion_gui():
 
 
     # ==========================================
-    # 3. IMAGE / MEDIA INGESTION SECTION
+    # 2. PHOTO OR VIDEO
     # ==========================================
     tk.Label(root, text="\n2. Select Raw Image / File:", font=FONT_BOLD, bg=BG_MAIN, fg=FG_MAIN).pack(anchor="w")
 
@@ -445,7 +485,12 @@ def run_ingestion_gui():
     fetch_img_btn.pack(side="left")
 
     def open_media_context_browser(dialog_id, dialog_name):
+        """Lists a chat's messages; "Download & Use" downloads the selected one's photo or file.
+
+        Any file can be downloaded; main() treats it as a video when its type says so, else as a photo.
+        """
         def setup_media_tree(browser):
+            # Text-only rows are greyed out and can't stay selected
             tree = browser.tree
             tree.tag_configure("disabled", foreground=FG_MUTED)
 
@@ -500,7 +545,7 @@ def run_ingestion_gui():
 
 
     # ==========================================
-    # 4. SUBMISSION HANDLER
+    # START BUTTON: closes the window and hands text and file to main()
     # ==========================================
     submit_frame = tk.Frame(root, bg=BG_MAIN)
     submit_frame.pack(fill="x", pady=(20, 0))
@@ -533,6 +578,7 @@ def run_ingestion_gui():
     return payload.get("text"), payload.get("image_path")
 
 def main():
+    """Runs the four phases for one post (see the module docstring); stops at the first failure."""
     print("========================================================")
     print("  EPLANET MASTER ORCHESTRATOR")
     print("========================================================")
@@ -573,6 +619,7 @@ def main():
             return
         video_engine.end_progress_line(f"  [+] Video secured at: {staged_video_path}")
     else:
+        # Any other file is taken as the photo; Pillow opens it in the graphics phase
         print("\n[~] Staging Raw Image Asset...")
         _, ext = os.path.splitext(raw_image_path)
         staged_image_path = os.path.join(session_dir, f"raw_image{ext.lower()}")

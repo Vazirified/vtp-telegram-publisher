@@ -1,4 +1,12 @@
 <!doctype html>
+<!--
+  VTP web interface: the only HTML page. kernel/webapp.py serves it at / and these files at /static/
+  (start it with run-web.bat or run-web.sh, then open http://127.0.0.1:8765/).
+  The page is a shell: app.js draws every tab into <main id="view"> from the #/... route in the URL.
+  The scripts are classic deferred scripts (no build step, no modules) that share globals; app.js
+  must come before posts.js. No inline scripts or style attributes: the server's
+  Content-Security-Policy blocks them.
+-->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -17,8 +25,10 @@
       <a href="#/posts" data-tab="posts">Posts</a>
       <a href="#/setup" data-tab="setup">Setup</a>
     </nav>
+    <!-- Telegram connection state, coloured by refreshStatus() in app.js -->
     <span class="status-dot" id="status-dot" title="Telegram status"></span>
   </header>
+  <!-- The current tab or page, drawn by app.js / posts.js -->
   <main id="view"></main>
 </body>
 </html>

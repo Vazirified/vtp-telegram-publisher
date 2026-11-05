@@ -1,3 +1,15 @@
+"""Telegram access for the web interface (webapp.py); the terminal tools don't use this module.
+
+TelegramService keeps one Telethon client (from auth_manager) connected while the web server
+runs. It handles the Setup page's login (API ID/hash, phone, code, two-step password), lists
+chats and messages as plain dicts for the page, reacts, deletes VTP's own previews, downloads
+source photos/videos for new posts, and pushes live updates (new, edited and deleted messages,
+reaction changes) to every open browser tab through queues that webapp streams as
+server-sent events. Reading never marks messages as read.
+
+Images the page shows (photos, thumbnails, profile pictures, custom emoji) are downloaded once
+into _workspace/web_cache/ and deleted after CACHE_MAX_AGE_DAYS (clean_web_cache, at start-up).
+"""
 import os
 import glob
 import json
@@ -19,6 +31,12 @@ from common import WORKSPACE_DIR, CREDENTIALS_DIR
 WEB_CACHE_DIR = os.path.join(WORKSPACE_DIR, "web_cache")
 CACHE_MAX_AGE_DAYS = 7
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+
+# ==========================================
+# MESSAGES AS DICTS
+# ==========================================
+# Chats are identified by Telethon's "marked" IDs (utils.get_peer_id): users positive,
+# groups negative, channels -100...; numeric chat IDs in channels.json have the same form.
 
 def make_preview(text, limit=80):
     """Flattens text onto one line and cuts it to `limit` characters with an ellipsis."""
@@ -52,7 +70,8 @@ def has_preview_image(msg):
 def is_pack_sticker(msg):
     """True for a sticker from a sticker pack.
 
-    Telegram also marks .webp files people send as stickers, but those belong to no pack.
+    Telegram also marks .webp files people send as stickers, but those belong to no pack
+    (InputStickerSetEmpty); they count as photos, so they can be a post's raw image.
     """
     sticker = msg.sticker
     if not sticker:
@@ -61,7 +80,10 @@ def is_pack_sticker(msg):
     return not isinstance(attribute.stickerset, types.InputStickerSetEmpty)
 
 def is_source_photo(msg):
-    """True if the message holds a full photo (or image file) that can be a post's raw image."""
+    """True if the message holds a full photo (or image file) that can be a post's raw image.
+
+    Whether VTP can read the format is checked after download (pipeline_service.adopt_upload).
+    """
     if msg.photo:
         return True
     return bool(msg.document and not is_pack_sticker(msg) and msg.file and (msg.file.mime_type or "").startswith("image/"))
@@ -129,7 +151,7 @@ def reactions_to_dict(reactions, names):
     }
 
 def message_to_dict(msg, names=None):
-    """The fields of a Telethon message that the web viewer shows."""
+    """The fields of a Telethon message that the web viewer shows. Service messages get only id, date and kind."""
     if isinstance(msg, MessageService):
         action = type(msg.action).__name__.replace("MessageAction", "")
         return {"id": msg.id, "date": msg.date.isoformat(), "service": action}
@@ -169,8 +191,15 @@ def chat_kind(entity):
         return "group"
     return "user"
 
+# ==========================================
+# SERVICE
+# ==========================================
 class TelegramService:
-    """One Telegram client shared by the web server: login, read-only browsing and live updates."""
+    """One Telegram client shared by the web server: login, browsing, reacting and live updates.
+
+    Methods are coroutines run on the server's event loop. Errors the user can act on are raised
+    as ValueError with a readable message (webapp turns them into HTTP 400).
+    """
 
     def __init__(self):
         self.client = None
@@ -180,8 +209,8 @@ class TelegramService:
         self.me = None
         self.login_phone = None
         self.login_step = None  # "code" or "password" while logging in
-        self.subscribers = set()
-        self.download_locks = {}
+        self.subscribers = set()  # one asyncio.Queue per open /api/events stream
+        self.download_locks = {}  # cache key -> lock while that file downloads
         self.peer_names = {}  # marked peer ID -> display name, for reaction lists
         self.reaction_rules = {}  # marked chat ID -> which reactions the chat allows
         self.standard_reaction_list = None  # Telegram's standard emoji reactions, loaded once
@@ -232,6 +261,7 @@ class TelegramService:
         await self.start()
 
     async def on_authorized(self):
+        """After login (or connecting with a logged-in session): registers the live update handlers."""
         self.me = await self.client.get_me()
         self.login_phone = self.login_step = None
         for event_type in (events.NewMessage(), events.MessageEdited(), events.MessageDeleted()):
@@ -250,6 +280,7 @@ class TelegramService:
             print(f"  [!] Chat list warm-up skipped: {e}")
 
     def status(self):
+        """Connection state, error, logged-in account and login step, for the page's Setup tab and status dot."""
         me = None
         if self.me:
             me = {"name": utils.get_display_name(self.me), "username": self.me.username}
@@ -264,6 +295,7 @@ class TelegramService:
             json.dump({"api_id": api_id, "api_hash": api_hash}, f, indent=2)
         await self.restart()
 
+    # Login runs in steps driven by the Setup page: send_code -> submit_code -> (submit_password)
     async def send_code(self, phone):
         try:
             await self.client.send_code_request(phone)
@@ -293,6 +325,7 @@ class TelegramService:
 
     # ---------------------------------------------------------------- browsing
     async def list_dialogs(self, offset_date=None, limit=30):
+        """The chat list, newest first; offset_date continues after the last chat of the previous page."""
         kwargs = {"limit": limit}
         if offset_date:
             kwargs["offset_date"] = offset_date
@@ -320,6 +353,7 @@ class TelegramService:
         return dialogs
 
     async def chat_info(self, chat_id):
+        """Name, kind, profile picture and username of one chat (a marked ID, or a @username)."""
         entity = await self.client.get_entity(chat_id)
         is_self = self.me and getattr(entity, "id", None) == self.me.id
         return {
@@ -350,6 +384,7 @@ class TelegramService:
         return self.peer_names
 
     async def messages_to_dicts(self, messages):
+        """message_to_dict for each message, with the names of recent reactors looked up first."""
         peers = set()
         for msg in messages:
             peers |= reactor_peers(msg)
@@ -461,7 +496,10 @@ class TelegramService:
         await self.client.delete_messages(chat_id, msg_ids, revoke=True)
 
     async def resolve_shortcuts(self, targets):
-        """Resolves [(label, target)] from channels.json to chats the viewer can open."""
+        """Resolves [(label, target)] from channels.json to chats the viewer can open.
+
+        A target that can't be found is kept with its error; duplicates (same chat) are dropped.
+        """
         shortcuts, seen = [], set()
         for label, target in targets:
             try:
@@ -481,6 +519,8 @@ class TelegramService:
         """Returns the cached file for `key`, or calls `await download(path_without_extension)` once.
 
         The same image is often requested by several <img> tags at once; only one download runs.
+        Files the browser can't show as images are deleted and give None. Cached files are
+        reused until clean_web_cache removes them.
         """
         pattern = os.path.join(WEB_CACHE_DIR, key + ".*")
         cached = glob.glob(pattern)
@@ -553,7 +593,9 @@ class TelegramService:
         return await self.cached_download(f"emoji_{document_id}", download)
 
     # ---------------------------------------------------------------- live updates
+    # Each update only says which chat and messages changed; the page fetches what it needs again.
     def subscribe(self):
+        """A queue that receives every update until unsubscribe(); one per browser tab's event stream."""
         queue = asyncio.Queue(maxsize=200)
         self.subscribers.add(queue)
         return queue
@@ -570,6 +612,7 @@ class TelegramService:
                 pass  # That tab stopped reading; it reloads when it reconnects
 
     async def broadcast_update(self, event):
+        """Telethon handler for new, edited and deleted messages."""
         if isinstance(event, events.MessageDeleted.Event):
             self.push({"type": "deleted", "chat_id": event.chat_id, "ids": event.deleted_ids})
         elif isinstance(event, events.MessageEdited.Event):
@@ -578,10 +621,11 @@ class TelegramService:
             self.push({"type": "new", "chat_id": event.chat_id, "ids": [event.message.id]})
 
     async def broadcast_reactions(self, update):
+        """Telethon handler for UpdateMessageReactions (reaction counts or reactors changed)."""
         self.push({"type": "reactions", "chat_id": utils.get_peer_id(update.peer), "ids": [update.msg_id]})
 
 def clean_web_cache():
-    """Deletes cached viewer images older than CACHE_MAX_AGE_DAYS."""
+    """Deletes cached viewer images older than CACHE_MAX_AGE_DAYS (webapp calls it at start-up)."""
     cutoff = time.time() - CACHE_MAX_AGE_DAYS * 86400
     for path in glob.glob(os.path.join(WEB_CACHE_DIR, "*")):
         try:

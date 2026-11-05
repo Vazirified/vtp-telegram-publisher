@@ -1,11 +1,25 @@
+"""Emoji inspector: prints the last messages of a chat with their formatting as Markdown and
+Telegram HTML, and the IDs of custom emoji used as reactions.
+
+    python kernel/inspect-emoji.py
+
+Asks for a chat (@username, or 'me' for Saved Messages) and goes through its last 10 messages,
+printing those with text. To use a custom emoji in a caption template (header_template or
+footer_template in _config/channels.json), send it to Saved Messages, run this with 'me' and
+copy its <tg-emoji emoji-id="..."> tag from the HTML output.
+
+Uses the Telegram login in _credentials/, so it can't run while the web interface or another
+VTP tool is connected. Not used by the web interface.
+"""
 import sys
-# Force Python to stop generating __pycache__ folders completely
+# No .pyc files or __pycache__ folders in the project
 sys.dont_write_bytecode = True
 
 import os
 import asyncio
 
-# --- FIX PATH TRAP ---
+# The project root on sys.path, so "kernel.auth_manager" can be imported. auth_manager's own
+# "from common import ..." works because Python puts this script's folder (kernel/) on sys.path.
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
@@ -13,7 +27,7 @@ if PROJECT_ROOT not in sys.path:
 
 from kernel.auth_manager import get_client
 
-# Correct Telethon modules for exporting formatted text
+# Telethon's converters from message text + entities back to Markdown / HTML
 from telethon.extensions.markdown import unparse as markdown_unparse
 from telethon.extensions.html import unparse as html_unparse
 
@@ -41,7 +55,7 @@ async def main():
                 print(f"==================================================")
                 print(f"[Message ID: {message.id}] Preview: {preview}...")
 
-                # 1. Properly translate internal message entities back to formatting tags
+                # 1. Formatting and custom emoji in the text, as tags (entities -> Markdown / HTML)
                 if message.entities:
                     print(f"  --> Ready Markdown text string:")
                     try:
@@ -59,7 +73,7 @@ async def main():
                 else:
                     print(f"  --> Plain Text (No inner entities): {message.message}")
 
-                # 2. Extract custom emoji document IDs from reactions
+                # 2. Reactions: standard emoji, or a custom emoji's document ID with ready-made tags
                 if message.reactions:
                     print("  --> Reactions found:")
                     for r in message.reactions.results:

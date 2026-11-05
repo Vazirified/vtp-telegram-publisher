@@ -1,4 +1,19 @@
-"""Post (session folder) operations for the web interface, built on the engines' functions."""
+"""Post (session folder) operations for the web interface, built on the engines' functions.
+
+webapp.py calls these (synchronous, run in a thread pool) for the Posts pages: list posts,
+take a photo or video for a new post, translate and create the session folder (text_engine),
+render images (image_engine) and videos (video_engine), edit texts and captions (publisher's
+caption builder), keep the publish log, and describe a post for its page.
+
+The files are the same ones the terminal tools use (see common.py), so a post can be
+continued in either interface. Two files are web-only: web_render.json (area, blur, mute,
+per-channel headline/font-size overrides) and web_publish_log.json (where previews and live
+posts were sent). Photos and videos picked on the New post page wait in _workspace/web_uploads/
+under a random token until the post is created.
+
+Errors the user can fix raise PostError (HTTP 400 with the message); unknown posts or files
+raise PostNotFound (HTTP 404).
+"""
 import os
 import re
 import glob
@@ -26,9 +41,11 @@ MAX_UPLOAD_BYTES = 30 * 1024 * 1024
 MAX_VIDEO_BYTES = 2000 * 1024 * 1024
 UPLOAD_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "AVIF": ".avif"}
 VIDEO_EXTENSIONS = set(video_engine.CONTAINER_EXTENSIONS.values()) | {video_engine.DEFAULT_EXTENSION}
+# An upload token: 32 hex characters plus the extension of what the file turned out to be
 UPLOAD_NAME = re.compile(r"[0-9a-f]{32}(%s)" % "|".join(
     re.escape(ext) for ext in sorted(set(UPLOAD_FORMATS.values()) | VIDEO_EXTENSIONS)))
 
+# Names accepted from URLs; anything else is refused, so a request can't reach outside _workspace
 SESSION_NAME = re.compile(r"session_[0-9A-Za-z_-]+")
 SESSION_FILE = re.compile(r"[0-9A-Za-z_.-]+\.(jpg|jpeg|png|webp|avif|mp4)", re.IGNORECASE)
 LANGUAGE_CODE = re.compile(r"[a-z]{2,3}")
@@ -59,6 +76,7 @@ def session_path(name):
     return path
 
 def session_created(name):
+    """The creation time in the folder name (session_YYYYmmdd_HHMMSS_...) as ISO text, or None."""
     match = re.match(r"session_(\d{8}_\d{6})", name)
     if not match:
         return None
@@ -75,6 +93,7 @@ def read_text(session_dir, lang):
     return headline, "".join(lines[1:]).strip()
 
 def write_text(session_dir, lang, headline, body):
+    """Writes <lang>.md in the format the engines read: "# Headline", a blank line, the body."""
     if not LANGUAGE_CODE.fullmatch(lang):
         raise PostError(f"Unknown language code: {lang}")
     headline = " ".join(headline.split())  # The headline must stay on the first line
@@ -96,10 +115,14 @@ def channel_languages(config, session_dir=None):
     return languages
 
 def mtime(path):
+    """Modification time, or None for a missing file. Used to spot files made before a later edit."""
     return os.path.getmtime(path) if os.path.exists(path) else None
 
 def list_sessions(limit=100):
-    """The newest posts first, with what has been done in each."""
+    """The newest posts first, with what has been done in each (images, videos, previews, published).
+
+    The thumbnail is the first rendered image, else the photo or video frame.
+    """
     folders = [p for p in glob.glob(os.path.join(WORKSPACE_DIR, "session_*")) if os.path.isdir(p)]
     sessions = []
     for path in sorted(folders, reverse=True)[:limit]:
@@ -126,13 +149,20 @@ def list_sessions(limit=100):
 # ==========================================
 # NEW POSTS
 # ==========================================
+# A photo or video picked on the New post page (uploaded, or downloaded from a chat) is written
+# to new_upload_path(), checked by adopt_upload() and renamed to a token. The page keeps the
+# token; create_session() copies the file into the new post's folder.
+
 def new_upload_path(prefix="upload"):
     """Where an upload (or a download from Telegram, which adds an extension) is written before it's checked."""
     os.makedirs(UPLOADS_DIR, exist_ok=True)
     return os.path.join(UPLOADS_DIR, f"{prefix}_{uuid.uuid4().hex}")
 
 def photo_extension(path):
-    """The token extension of a photo VTP accepts; None if the file isn't a photo at all."""
+    """The token extension of a photo VTP accepts; None if the file isn't a photo at all.
+
+    Raises PostError for photo formats Pillow reads but VTP doesn't take (e.g. GIF, BMP).
+    """
     try:
         with Image.open(path) as img:
             image_format = img.format
@@ -183,10 +213,14 @@ def prepare_video(video_path, token_path, info):
         raise PostError(str(e))
 
 def is_video_file(path):
+    """True for a video token (by its extension)."""
     return os.path.splitext(path)[1] in VIDEO_EXTENSIONS
 
 def clean_uploads(max_age_days=7):
-    """Deletes uploaded photos older than max_age_days; a post keeps its own copy (raw_image.*)."""
+    """Deletes uploads (photos, videos and their prepared files) older than max_age_days.
+
+    Called at start-up; a post keeps its own copy (raw_image.* or raw_video.* and its files).
+    """
     cutoff = datetime.datetime.now().timestamp() - max_age_days * 86400
     for path in glob.glob(os.path.join(UPLOADS_DIR, "*")):
         try:
@@ -196,6 +230,7 @@ def clean_uploads(max_age_days=7):
             pass
 
 def upload_path(token):
+    """Path of an upload token's file; PostNotFound if the token is malformed or its file is gone."""
     path = os.path.join(UPLOADS_DIR, token)
     if not UPLOAD_NAME.fullmatch(token) or not os.path.isfile(path):
         raise PostNotFound("The chosen photo or video is no longer available. Choose it again.")
@@ -205,7 +240,8 @@ def create_session(raw_text, image_token, model=None):
     """Translates the text with Gemini, creates the session folder and stages the photo or video.
 
     Returns the session name. Raises PostError with a readable message when Gemini fails,
-    so the user can try another model.
+    so the user can try another model. A model that worked is saved as the next default.
+    Captions are created at once, like the terminal publisher does.
     """
     image = upload_path(image_token)
     clean_text = text_engine.sanitize_clipboard_text(raw_text or "")
@@ -249,6 +285,7 @@ def still_source(session_dir):
     return image_engine.find_raw_image(session_dir)
 
 def load_render_settings(session_dir):
+    """web_render.json with defaults: {"aoi", "blur", "mute", "overrides": {channel: {"headline", "font_size"}}}."""
     path = os.path.join(session_dir, RENDER_SETTINGS_FILE)
     settings = {"aoi": None, "blur": DEFAULT_BLUR, "mute": False, "overrides": {}}
     if os.path.exists(path):
@@ -261,8 +298,10 @@ def save_render_settings(session_dir, settings):
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
 def set_render_options(session_dir, aoi, blur, mute=False):
-    """aoi is [left, top, right, bottom] in photo pixels (may extend past the edges) or None.
+    """Saves the area of interest, blur and mute used by the next render.
 
+    aoi is [left, top, right, bottom] in photo pixels (may extend past the edges to add space
+    around the subject) or None for center-cropping. blur is the background blur radius.
     mute leaves the sound out of a video post's videos.
     """
     if aoi is not None:
@@ -276,13 +315,14 @@ def set_render_options(session_dir, aoi, blur, mute=False):
     save_render_settings(session_dir, settings)
 
 def channel_profile(config, channel):
+    """The channel's entry in channels.json; PostNotFound for an unknown channel."""
     profile = config.get("channels", {}).get(channel)
     if not profile:
         raise PostNotFound(f"No channel named {channel} in channels.json.")
     return profile
 
 def image_headline(session_dir, channel, profile, settings):
-    """The headline and font size drawn on a channel's image, with any per-channel override applied."""
+    """(headline, font size, style) drawn on a channel's image, with any per-channel override applied."""
     lang = profile.get("language", "en").lower()
     override = settings["overrides"].get(channel, {})
     headline = override.get("headline")
@@ -292,6 +332,7 @@ def image_headline(session_dir, channel, profile, settings):
     return headline, override.get("font_size") or style["font_size"], style
 
 def headline_fits(headline, style, font_size, profile):
+    """True if the headline fits the template's headline box at this size (an empty one always fits)."""
     if not headline:
         return True
     is_rtl = profile.get("is_rtl", False)
@@ -346,7 +387,10 @@ def render_videos(session_dir, channels, on_progress, on_done):
             on_done(name, None)
 
 def set_override(session_dir, channel, headline=None, font_size=None):
-    """Sets the image-only headline and/or font size of a channel; both None removes the override."""
+    """Sets the image-only headline and/or font size of a channel and re-renders its image.
+
+    Both None removes the override. Captions keep the full headline from <lang>.md.
+    """
     channel_profile(load_channels_config(), channel)
     settings = load_render_settings(session_dir)
     override = {}
@@ -362,7 +406,7 @@ def set_override(session_dir, channel, headline=None, font_size=None):
     render_channels(session_dir, [channel])
 
 def shrink_to_fit(session_dir, channel):
-    """Overflow option 1: lowers the font size until the headline fits (down to MIN_FONT_SIZE)."""
+    """Overflow option 1: lowers the font size until the headline fits (down to image_engine.MIN_FONT_SIZE)."""
     config = load_channels_config()
     profile = channel_profile(config, channel)
     settings = load_render_settings(session_dir)
@@ -394,6 +438,8 @@ def shorten_with_gemini(session_dir, channel):
 # ==========================================
 # CAPTIONS
 # ==========================================
+# A caption is <channel>_caption.txt (Telegram HTML), built by publisher.build_caption from the
+# channel's <lang>.md and its header/footer templates, then editable on the post page.
 def caption_path(session_dir, channel):
     return os.path.join(session_dir, f"{channel}_caption.txt")
 
@@ -410,6 +456,7 @@ def write_caption(session_dir, channel, text):
         f.write(text)
 
 def save_caption(session_dir, channel, text):
+    """Saves a caption edited on the post page (for a channel that exists in channels.json)."""
     channel_profile(load_channels_config(), channel)
     write_caption(session_dir, channel, text)
 
@@ -425,6 +472,11 @@ def rebuild_caption(session_dir, channel):
 # PUBLISH LOG
 # ==========================================
 def load_publish_log(session_dir):
+    """web_publish_log.json: {"previews": {channel: entry}, "published": {channel: entry}, "preview_messages": [...]}.
+
+    An entry is {"date", "chat_id", "msg_id"} for a sent message, {"date", "failed": True} for a
+    failed send, and gets "removed": True once a preview was deleted. {} before anything was sent.
+    """
     path = os.path.join(session_dir, PUBLISH_LOG_FILE)
     if not os.path.exists(path):
         return {}
@@ -473,7 +525,12 @@ def forget_previews(session_dir, deleted):
 # POST DETAILS
 # ==========================================
 def session_detail(name):
-    """Everything the post page shows: texts, photo, render settings, channels, captions, publish log."""
+    """Everything the post page shows: texts, photo, render settings, channels, captions, publish log.
+
+    "Outdated" flags compare modification times: an image or caption older than its <lang>.md was
+    made from an earlier text; a video older than its still was rendered with earlier settings.
+    "version" values (file mtimes) go into image URLs so the browser reloads changed files.
+    """
     session_dir = session_path(name)
     config = load_channels_config()
     ensure_captions(session_dir)
@@ -518,6 +575,7 @@ def session_detail(name):
             "name": channel,
             "language": lang,
             "is_rtl": profile.get("is_rtl", False),
+            # False when channels.json gives the channel no chat_id to publish to; the page warns
             "has_target": bool(publisher.parse_target(profile.get("chat_id"))),
             "headline": headline or "",
             "font_size": font_size,

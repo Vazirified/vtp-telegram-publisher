@@ -1,3 +1,16 @@
+"""Text phase: turns one news text into a headline and body per language with Gemini.
+
+Gemini receives the source text and a system instruction (build_system_instruction) listing the
+languages of the channels in channels.json, plus English. Languages already present in the text
+are kept as they are; missing ones are translated from English. The reply is JSON:
+    {"en": {"headline": "...", "body": "..."}, "fa": {...}, ...}
+save_session() then creates _workspace/session_<timestamp>_<english-slug>/ with one <lang>.md per
+language ("# Headline", blank line, body).
+
+Used by the terminal tool (main.py calls execute_text_pipeline, which asks for the key and model
+in the terminal) and by the web interface (pipeline_service calls sanitize_clipboard_text,
+request_translation and save_session directly). Running this file sends a built-in sample to Gemini.
+"""
 import os
 import re
 import json
@@ -10,13 +23,13 @@ from common import (
     load_channels_config, load_gemini_credentials, save_gemini_credentials, select_operational_model,
 )
 
-# Compile Clipboard Sanitizer Regex
+# The "[6/9/2026 3:15 PM] Name:" header Telegram Desktop puts before each message copied from a chat
 TELEGRAM_CLIPBOARD_REGEX = re.compile(
     r'\[\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?\]\s*[^:]+\s*:\s*'
 )
 
 def get_gemini_api_token(cached_profile):
-    """Guarantees token acquisition gate validation loops."""
+    """The saved Gemini API key, or one pasted in the terminal (empty input exits)."""
     api_key = cached_profile.get("gemini_api_key")
     if api_key:
         return api_key
@@ -32,12 +45,15 @@ def get_gemini_api_token(cached_profile):
     return api_key
 
 def sanitize_clipboard_text(raw_input_text: str) -> str:
-    """Strips raw usernames and timestamps from the raw copy paste text."""
+    """Removes the date and sender headers of messages copied from Telegram Desktop, and outer whitespace."""
     cleaned = TELEGRAM_CLIPBOARD_REGEX.sub("", raw_input_text)
     return cleaned.strip()
 
 def extract_target_languages():
-    """Reads configured system targets to build a dynamic language filter list."""
+    """The distinct "language" codes of the channels in channels.json, always including "en".
+
+    Falls back to ["en"] when channels.json is missing or unreadable.
+    """
     if not os.path.exists(CONFIG_FILE):
         return ["en"]
     try:
@@ -50,7 +66,12 @@ def extract_target_languages():
         return ["en"]
 
 def build_system_instruction(target_languages):
-    """Returns Gemini's instructions for splitting the input and translating it into target_languages."""
+    """Returns Gemini's instructions for splitting the input and translating it into target_languages.
+
+    The rules: first line or paragraph of each language is the headline, the rest the body;
+    English is written first if missing; present languages are copied unchanged; Sorani Kurdish
+    (ckb) uses its own alphabet; the reply is a JSON object keyed by language code.
+    """
     return (
         f"You are an expert multilingual content translation engine that uses a economic/financial professional tone and translates every sentence given to it without leaving out any part or paragraph. Your task is to process incoming text data and output translations or parsed text data matching this target language array: {target_languages}.\n\n"
         f"Parsing Layout Rules:\n"
@@ -79,7 +100,7 @@ def request_translation(clean_text, api_token, active_model):
     system_instruction = build_system_instruction(extract_target_languages())
     prompt = f"Process the following source content text:\n\n{clean_text}"
 
-    # Initialize the GenAI Client with a strict 30-second network timeout guard
+    # Gives up after 30 seconds, so an overloaded model fails instead of hanging
     client = genai.Client(
         api_key=api_token,
         http_options=types.HttpOptions(timeout=30 * 1000) # Value in milliseconds
@@ -96,7 +117,8 @@ def request_translation(clean_text, api_token, active_model):
     )
     parsed_payload = json.loads(response.text)
 
-    # Gemini sometimes returns a list of language blocks instead of a dictionary
+    # Gemini sometimes returns a list of language blocks instead of a dictionary: either
+    # [{"language": "en", "headline": ..., "body": ...}, ...] or [{"en": {...}}, {"fa": {...}}]
     if isinstance(parsed_payload, list):
         normalized_dict = {}
         for block in parsed_payload:
@@ -113,11 +135,15 @@ def request_translation(clean_text, api_token, active_model):
     return parsed_payload
 
 def save_session(parsed_payload):
-    """Creates a session folder named after the English headline and writes one <lang>.md per language."""
+    """Creates a session folder named after the English headline and writes one <lang>.md per language.
+
+    The folder is _workspace/session_<YYYYmmdd_HHMMSS>_<slug>; two posts saved in the same second
+    with the same headline would share it. Returns the folder's path.
+    """
     en_node = parsed_payload.get("en", {})
     en_headline = en_node.get("headline", "untitled-post")
 
-    # Process text layout into clean URL-safe dash formatting
+    # Folder-name slug: lowercase ASCII letters, digits and single dashes
     slug = en_headline.lower()
     slug = re.sub(r'[^a-z0-9\s-]', '', slug)  # Drop special characters/punctuation
     slug = re.sub(r'[\s-]+', '-', slug)        # Map whitespace sequences down into single dashes
@@ -148,7 +174,11 @@ def save_session(parsed_payload):
     return session_directory
 
 def execute_text_pipeline(raw_payload: str) -> str:
-    """Sanitizes the input, asks Gemini until a model succeeds, and returns the new session folder."""
+    """Terminal text phase: cleans the input, asks Gemini until a model succeeds, returns the new session folder.
+
+    Asks for the API key if none is saved and shows the model menu before each attempt; a failed
+    model returns to the menu (Ctrl+C aborts). Returns None if the cleaned text is empty.
+    """
     clean_text = sanitize_clipboard_text(raw_payload)
     if not clean_text:
         print("[ERROR] Input text payload resolved to empty string after serialization pass.")
@@ -178,6 +208,7 @@ def execute_text_pipeline(raw_payload: str) -> str:
     return session_directory
 
 if __name__ == "__main__":
+    # Developer test: sends this sample to Gemini and creates a real session folder
     mock_plain_text_paste = """
     [6/9/2026 3:15 PM] Kaveh:
     Unified Dynamic Engine Successfully Implemented

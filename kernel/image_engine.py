@@ -1,3 +1,26 @@
+"""Graphics phase: renders each channel's branded image, <channel>_broadcast.jpg, from a post's photo.
+
+An image is the photo placed on a blurred, enlarged copy of itself, the channel's template PNG on
+top, and the headline drawn inside the template's safe area.
+
+- Terminal interface: main.py calls render_channel_assets(), which asks in the terminal for the
+  area of interest (AOI), the blur and a fix for every headline that doesn't fit.
+- Web interface: pipeline_service calls the non-interactive parts (render_channel, layout_headline,
+  shrink_font_size, headline_style, shorten_headline_with_gemini) and asks in the browser instead.
+- video_engine lays out every video frame with snippet_geometry() and draw_channel_headline().
+
+Run on its own, it re-renders the LATEST session folder in _workspace/:
+    python kernel/image_engine.py
+
+Session files read: raw_image.* (a video post: video_frame.png, video_info.json, video_preview.mp4)
+and <lang>.md, whose first "#" line is the headline. Written: <channel>_broadcast.jpg, and for a
+video post <channel>_broadcast.mp4 (through video_engine).
+
+Channel settings read from _config/channels.json: language, is_rtl, and in image_layout:
+canvas_size, template_overlay_path, raw_image_placement (x, y, width, height) and
+headline_safe_area (x_start, y_start, width, max_height, max_lines, font_path, font_size,
+font_color, alignment, line_spacing). Missing safe-area keys get the defaults in headline_style().
+"""
 import os
 import glob
 import tkinter as tk
@@ -14,23 +37,26 @@ from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter, fea
 import arabic_reshaper
 from bidi.algorithm import get_display
 
-# Attempt to load GenAI
+# Optional: only needed for "Shorten with Gemini"; callers check for None
 try:
     from google import genai
 except ImportError:
     genai = None
 
+# Channel "language" values that get the Kurdish letter substitutions in the fallback shaping
 KURDISH_LANG_CODES = ['ckb', 'ku', 'kurdish']
 
-# Smallest size the overflow menu's auto-shrink option goes down to
+# Smallest size the auto-shrink option ("Shrink font" in the web interface) goes down to
 MIN_FONT_SIZE = 18
 
-# Raqm (HarfBuzz + FriBiDi) shapes RTL text properly from the raw string.
-# Without it we fall back to arabic_reshaper + python-bidi, which cannot
-# shape the Kurdish letters ڵ ڕ ێ ە and has to substitute look-alikes.
+# Raqm (HarfBuzz + FriBiDi) shapes RTL text properly from the raw string: Pillow is given the
+# text with direction="rtl" and the language. Without it (no FriBiDi library found) the text is
+# shaped by arabic_reshaper + python-bidi in shape_rtl(), which cannot shape the Kurdish letters
+# ڵ ڕ ێ ە and substitutes look-alikes. The setup scripts report which one is active.
 RAQM_AVAILABLE = features.check("raqm")
 
 def extract_markdown_headline(md_file_path):
+    """Returns the first "# ..." line of a <lang>.md file without the #, or None."""
     if not os.path.exists(md_file_path): return None
     with open(md_file_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -38,14 +64,15 @@ def extract_markdown_headline(md_file_path):
     return None
 
 def shape_rtl(text, lang_code=None, custom_reshaper=None):
-    """Fallback RTL shaping for when Raqm is unavailable.
+    """Fallback RTL shaping for when Raqm is unavailable: joined letter forms in visual order.
 
     arabic_reshaper has no presentation forms for the Kurdish letters ڵ ڕ ێ ە,
     so they are swapped for look-alikes; ڵ ڕ ێ lose their V mark as a result.
+    Never use these substitutions on the Raqm path, which draws the real letters.
     """
     process_line = text
     if lang_code in KURDISH_LANG_CODES:
-        # 1. Pre-Reshape Setup
+        # Before reshaping: letters arabic_reshaper can't join, swapped for Arabic look-alikes
         process_line = process_line.replace('ە', 'ة') # Ae -> Teh Marbuta
         process_line = process_line.replace('ھ', 'ه') # Kurdish Heh -> Arabic Heh
         process_line = process_line.replace('ێ', 'ی').replace('ڕ', 'ر').replace('ڵ', 'ل')
@@ -56,7 +83,7 @@ def shape_rtl(text, lang_code=None, custom_reshaper=None):
         reshaped = arabic_reshaper.reshape(process_line)
 
     if lang_code in KURDISH_LANG_CODES:
-        # 2. Post-Reshape Ligature Busters & Swaps
+        # After reshaping: Teh Marbuta (standing in for ە) drawn as Heh, which looks like ە
         reshaped = reshaped.replace('\uFE93', '\uFEE9') # Isolated Teh Marbuta -> Isolated Heh
         reshaped = reshaped.replace('\uFE94', '\uFEEA') # Final Teh Marbuta -> Final Heh
         reshaped = reshaped.replace('\u0629', '\uFEE9') # Raw fallback
@@ -64,7 +91,11 @@ def shape_rtl(text, lang_code=None, custom_reshaper=None):
     return get_display(reshaped)
 
 def prepare_line(text, is_rtl, lang_code=None, custom_reshaper=None):
-    """Returns the text to draw and the extra textlength/text arguments it needs."""
+    """Returns the text to draw and the extra textlength/text arguments it needs.
+
+    LTR text is drawn as it is. RTL text is passed raw with Raqm's direction and language when
+    Raqm is available, otherwise pre-shaped by shape_rtl().
+    """
     if not is_rtl:
         return text, {}
     if RAQM_AVAILABLE:
@@ -72,7 +103,10 @@ def prepare_line(text, is_rtl, lang_code=None, custom_reshaper=None):
     return shape_rtl(text, lang_code, custom_reshaper), {}
 
 def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, lang_code=None):
-    """Wraps text intelligently. Uses a custom RTL reshaper if provided."""
+    """Splits text into lines no wider than max_width, word by word, measured as they will be drawn.
+
+    A word wider than max_width on its own still gets a line of its own (it overflows).
+    """
     words = text.split()
     lines, current_line = [], []
     for word in words:
@@ -91,8 +125,11 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, l
 PLAYBACK_INTERVAL = 66
 
 def select_aoi_on_image(image_path, start_playback=None):
-    """Lets the user click two corners of the area of interest on the photo; returns the box or None.
+    """Terminal interface: a Tk window where the user clicks two opposite corners of the area of
+    interest (AOI), the part of the photo that must stay visible in every channel's image.
 
+    Returns (left, top, right, bottom) in photo pixels, or None if the window was closed first.
+    The corners may lie in the dark margin around the photo, to add space around the subject.
     For a video, image_path is its still frame and start_playback(size) returns a player
     (video_engine.LoopingFrames) whose frames, at the photo's size in the window, replace it.
     """
@@ -101,11 +138,14 @@ def select_aoi_on_image(image_path, start_playback=None):
     img = Image.open(image_path).convert("RGBA")
     w, h = img.size
 
+    # The photo in the middle of a canvas twice its size: a margin of half its size on every side
     pad_w, pad_h = int(w * 2), int(h * 2)
     offset_x, offset_y = int(w * 0.5), int(h * 0.5)
 
     padded_img = Image.new("RGBA", (pad_w, pad_h), (40, 40, 40, 255))
 
+    # Square grid, a tenth of the photo's width (at least 50 px), with lines through the photo's
+    # top-left corner. The web interface's area editor draws the same grid.
     draw_pad = ImageDraw.Draw(padded_img)
     grid_spacing = max(50, int(w * 0.1))
     grid_color = (90, 90, 90, 255)
@@ -119,6 +159,7 @@ def select_aoi_on_image(image_path, start_playback=None):
 
     padded_img.paste(img, (offset_x, offset_y))
 
+    # Shown scaled down to fit the screen; clicks are scaled back to canvas pixels below
     preview = padded_img.copy()
     preview.thumbnail((1000, 800))
     photo = ImageTk.PhotoImage(preview)
@@ -170,6 +211,7 @@ def select_aoi_on_image(image_path, start_playback=None):
             player.close()
 
     if len(points) == 2:
+        # Window pixels -> canvas pixels -> photo pixels (negative or past the size in the margin)
         scale_x = pad_w / preview.width
         scale_y = pad_h / preview.height
 
@@ -183,6 +225,7 @@ def select_aoi_on_image(image_path, start_playback=None):
     return None
 
 def shorten_headline_with_gemini(headline, lang_code, api_token, active_model):
+    """Asks Gemini for a shorter headline in the same language. Needs google-genai (genai not None)."""
     client = genai.Client(api_key=api_token)
     prompt = f"Shorten this headline for a broadcast graphic so it fits perfectly on a screen. Keep the original language ({lang_code}). Output ONLY the shortened headline without quotes: {headline}"
     response = client.models.generate_content(model=active_model, contents=prompt)
@@ -194,7 +237,11 @@ def find_raw_image(session_dir):
     return raw_images[0] if raw_images else None
 
 def headline_style(layout, is_rtl):
-    """Reads a channel's headline_safe_area settings, filling in the defaults for missing keys."""
+    """Reads a channel's headline_safe_area settings, filling in the defaults for missing keys.
+
+    The safe area is the box in the template, in canvas pixels, the headline must stay inside.
+    font_path is relative to the project root. alignment defaults to right for RTL channels.
+    """
     safe_area = layout.get("headline_safe_area", {})
     return {
         "font_path": os.path.join(PROJECT_ROOT, safe_area.get("font_path", "_config/fonts/Dana-Medium.ttf")),
@@ -213,7 +260,8 @@ def make_rtl_reshaper(is_rtl):
     """Returns the arabic_reshaper for the fallback shaping, or None when it isn't needed."""
     if not is_rtl or RAQM_AVAILABLE:
         return None
-    # FORCE ARABIC MODE TO ENSURE STABLE SHAPING
+    # Arabic mode for every RTL language (Persian and Kurdish included); shape_rtl() handles the
+    # Kurdish letters it doesn't know
     reshaper_config = {
         'language': 'Arabic',
         'delete_harakat': False,
@@ -224,7 +272,8 @@ def make_rtl_reshaper(is_rtl):
 def layout_headline(headline, style, font_size, is_rtl, lang_code, custom_reshaper=None):
     """Wraps the headline at font_size and checks it against the safe area.
 
-    Returns a dict with the font, lines, line_height, total_height and fits.
+    Returns a dict with the font, lines, line_height, total_height and fits. It fits when the
+    lines' total height is within max_height and there are no more than max_lines lines.
     """
     try:
         font = ImageFont.truetype(style["font_path"], font_size)
@@ -240,7 +289,10 @@ def layout_headline(headline, style, font_size, is_rtl, lang_code, custom_reshap
     return {"font": font, "lines": lines, "line_height": line_height, "total_height": total_height, "fits": fits}
 
 def shrink_font_size(headline, style, font_size, is_rtl, lang_code, custom_reshaper=None):
-    """Lowers the font size 2 px at a time until the headline fits, stopping at MIN_FONT_SIZE."""
+    """Lowers the font size 2 px at a time until the headline fits, stopping at MIN_FONT_SIZE.
+
+    Returns the new size, which may still not fit (an odd starting size ends one below the minimum).
+    """
     while font_size > MIN_FONT_SIZE:
         font_size -= 2
         if layout_headline(headline, style, font_size, is_rtl, lang_code, custom_reshaper)["fits"]:
@@ -260,6 +312,7 @@ def snippet_geometry(width, height, target_size, aoi=None):
         return {"mode": "fit"}
     target_w, target_h = target_size
 
+    # An area reaching into the margin enlarges the box the photo is cut from; the extra part is empty
     min_x = min(0, aoi[0])
     min_y = min(0, aoi[1])
     max_x = max(width, aoi[2])
@@ -268,10 +321,13 @@ def snippet_geometry(width, height, target_size, aoi=None):
     area = (aoi[0] - min_x, aoi[1] - min_y, aoi[2] - min_x, aoi[3] - min_y)
     bounds_w, bounds_h = max_x - min_x, max_y - min_y
 
+    # An area covering more than 60% of the box is shown whole, letterboxed, rather than cropped
     area_ratio = ((area[2] - area[0]) * (area[3] - area[1])) / (bounds_w * bounds_h)
     if area_ratio > 0.60:
         return {"mode": "pad", "bounds": bounds, "area": area}
 
+    # Scale the box to cover the target, then place the crop window centered on the area,
+    # pushed back inside the scaled box where the area is near an edge
     scale = max(target_w / bounds_w, target_h / bounds_h)
     new_w, new_h = int(bounds_w * scale), int(bounds_h * scale)
 
@@ -288,6 +344,8 @@ def compose_image(raw_path, layout, aoi=None, blur_radius=30):
     """Places the photo on a blurred copy of itself and overlays the channel template.
 
     aoi is (left, top, right, bottom) in photo pixels and may extend past the photo's edges.
+    The photo (cut and scaled by snippet_geometry) fills raw_image_placement; the blurred copy
+    fills the whole canvas behind it. Returns the RGBA canvas, without the headline.
     """
     placement = layout["raw_image_placement"]
 
@@ -381,9 +439,11 @@ def render_channel(session_dir, channel_name, profile, raw_path, aoi=None, blur_
     return dict(result, path=out_path)
 
 def ask_until_headline_fits(session_dir, channel_name, profile):
-    """Shows the overflow menu in the terminal until the channel's headline fits.
+    """Terminal interface: shows the overflow menu until the channel's headline fits.
 
-    Returns the headline and font size to render with.
+    The options are shrinking the font, a shorter headline from Gemini, or typing one. Without an
+    answer, input_with_timeout picks option 2. Returns the headline and font size to render with
+    (the headline is used on the image only; captions keep the one in <lang>.md).
     """
     lang_code = profile.get("language", "en").lower()
     is_rtl = profile.get("is_rtl", False)
@@ -439,9 +499,11 @@ def ask_until_headline_fits(session_dir, channel_name, profile):
     return headline, font_size
 
 def render_channel_assets(session_dir=None):
-    """Renders every channel's image, asking for the AOI, blur and overflow fixes in the terminal.
+    """Terminal interface: renders every channel's image, asking for the AOI, blur and overflow fixes.
 
-    For a video post the images are stills from its frame, and every channel's video follows.
+    Works on session_dir, or the latest session folder when run on its own. For a video post the
+    images are stills from its frame, it also asks whether to mute, and every channel's video
+    follows. The prompts time out to their defaults (no AOI, blur 30, not muted).
     """
     session_dir = session_dir or get_latest_session_directory()
     if not session_dir:

@@ -714,7 +714,8 @@ class PostView {
       }
     });
 
-    const rows = d.channels.map((c) => {
+    // Numbered in channels.json order, the order the server lists them in
+    const rows = d.channels.map((c, i) => {
       const ready = c.image && c.caption !== null;
       const box = h("input", { type: "checkbox", checked: ready && this.chosenChannels.has(c.name), disabled: !ready || !!running });
       if (ready) boxes.set(c.name, box);
@@ -724,6 +725,7 @@ class PostView {
         syncAll();
       });
       return h("tr", {},
+        h("td", { class: "row-number" }, i + 1),
         h("td", {}, h("label", { class: "check" }, box, h("span", {}, c.name), h("span", { class: "muted" }, ` · ${c.language}`)),
           ready ? null : h("div", { class: "muted small" }, c.image ? "no caption" : "not rendered yet"),
           c.has_target ? null : h("div", { class: "warn small" }, "no chat_id in channels.json")),
@@ -758,7 +760,7 @@ class PostView {
             + "Publishing deletes the published channels' previews from it."]
           : "No review channel is set in channels.json, so previews are off."),
       h("table", { class: "publish-table" },
-        h("thead", {}, h("tr", {}, h("th", {}, h("label", { class: "check" }, allBox, h("span", {}, "All channels"))), h("th", {}, "Preview"), h("th", {}, "Live"))),
+        h("thead", {}, h("tr", {}, h("th", { class: "row-number" }, "#"), h("th", {}, h("label", { class: "check" }, allBox, h("span", {}, "All channels"))), h("th", {}, "Preview"), h("th", {}, "Live"))),
         h("tbody", {}, rows)),
       running ? h("p", { class: "muted" },
         `${running.kind === "previews" ? "Sending previews" : "Publishing"}: ${Object.keys(running.results).length} of ${running.channels.length} done. `

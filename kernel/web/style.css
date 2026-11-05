@@ -1012,6 +1012,14 @@ a.btn.primary { color: var(--accent-text); }
   font-weight: 400;
 }
 
+.publish-table .row-number {
+  width: 1%;
+  padding-right: 0;
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
 /* Published posts, one card per channel */
 .published-section:empty { display: none; }
 

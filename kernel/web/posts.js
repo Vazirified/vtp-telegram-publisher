@@ -458,6 +458,14 @@ class PostView {
     const scale = 1 + 2 * AOI_MARGIN;
     const frame = h("div", { class: "aoi-frame", title: "Drag to mark the area that must stay visible" });
     frame.style.aspectRatio = `${width} / ${height}`;
+    // Square grid cells of a tenth of the photo's width, with lines through its corners, like the
+    // terminal version. Sizes are fractions of the frame; a background-position percentage p puts the
+    // tile at p * (frame - tile), hence the division.
+    const cellX = 0.1 / scale;
+    const cellY = cellX * (width / height);
+    const offset = AOI_MARGIN / scale;
+    frame.style.backgroundSize = `${cellX * 100}% ${cellY * 100}%`;
+    frame.style.backgroundPosition = [cellX, cellY].map((cell) => cell < 1 ? `${(offset / (1 - cell)) * 100}%` : "0").join(" ");
     const rect = h("div", { class: "aoi-rect" });
     // A video plays in a loop, so the area can be checked against every moment of it
     frame.append(video

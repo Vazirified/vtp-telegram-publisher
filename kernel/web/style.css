@@ -917,7 +917,7 @@ a.btn.primary { color: var(--accent-text); }
   background-image:
     linear-gradient(#3c3c3c 2px, transparent 2px),
     linear-gradient(90deg, #3c3c3c 2px, transparent 2px);
-  background-size: 8.333% 8.333%;
+  /* background-size and -position are set from the photo's size in aoiEditor(), to keep the cells square */
   cursor: crosshair;
   touch-action: none; /* drawing the area must not scroll the page on phones */
   user-select: none;

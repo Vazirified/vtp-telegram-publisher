@@ -1036,6 +1036,15 @@ a.btn.primary { color: var(--accent-text); }
   margin-top: 8px;
 }
 
+.start-over {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.start-over .btn { margin: 4px 16px 4px 0; }
+
 .published-card {
   border: 1px solid var(--border);
   border-radius: var(--radius);

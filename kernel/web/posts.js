@@ -616,7 +616,11 @@ class PostView {
     section.replaceChildren(
       h("h3", {}, "Published posts"),
       h("p", { class: "muted small" }, "Each post as it appears in its channel. Reactions update live, views every minute."),
-      h("div", { class: "published-grid" }, [...cards.values()].map((entry) => entry.card)));
+      h("div", { class: "published-grid" }, [...cards.values()].map((entry) => entry.card)),
+      // The Telegram tab opens with its chat list and nothing selected, ready for the next post
+      h("div", { class: "start-over" },
+        h("a", { class: "btn primary", href: "#/telegram" }, "Start over"),
+        h("span", { class: "muted small" }, "Back to the Telegram chats to pick the messages for a new post.")));
 
     // View counts change without any Telegram update, so they are re-read now and then
     if (!this.viewsTimer) {

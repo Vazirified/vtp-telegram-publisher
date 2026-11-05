@@ -131,12 +131,12 @@ To start without Telegram, open **Posts → New post** and paste the text instea
 - **Photo or video:** tap the one to use (photos and videos from the selected messages are offered; videos have a ▶ mark), or **Upload a photo or video**, which opens the gallery or camera on a phone. Photos: JPG, PNG, WebP or AVIF up to 30 MB. Videos: any common format (MP4, MOV, MKV, WebM, AVI, ...) up to 2 GB, including Telegram "GIFs" and round videos.
 - **Translate:** choose the Gemini model and tap **Translate and create post**. A video is prepared first (a still frame and a small copy the browser can play), which takes a while for long videos. Translating can take up to a minute. If the model fails or is overloaded, the error is shown and your text and photo or video stay: choose another model and try again (the video isn't prepared again).
 
-The post page then opens. Its four sections can be revisited in any order; changes are saved automatically.
+The post page then opens. Its four sections can be revisited in any order; changes are saved automatically. Tap a section's heading to fold it away or open it again. Captions start folded; the browser remembers which sections you last left open, for every post.
 
 **3. Texts.** Each language's headline and body, with English first. The headline is drawn on the images; the captions are made from the headline and the body.
 
 **4. Images.**
-- Optionally drag a box on the photo to mark the area that must stay visible. The dark grid around the photo can be included to add space around it. If the area covers most of the photo, it's fitted whole; otherwise the photo is cropped around it. **Clear area** goes back to center-cropping.
+- Optionally drag a box on the photo to mark the area that must stay visible. The dark grid around the photo can be included to add space around it; its squares are a tenth of the photo's width, as in the terminal version. If the area covers most of the photo, it's fitted whole; otherwise the photo is cropped around it. **Clear area** goes back to center-cropping.
 - Set the **background blur** with the slider and tap **Render images**. Every channel's image appears in a grid; tap one to open it full size.
 - A channel whose headline doesn't fit is marked **Headline too long**, with two fixes:
   - **Shrink font** lowers the font size 2 px at a time until it fits, down to about 18 px.
@@ -155,12 +155,13 @@ The post page then opens. Its four sections can be revisited in any order; chang
 **5. Captions.** One editor per channel with a preview of how Telegram will show it. Captions are Telegram HTML: `<b>`, `<i>`, `<a href="...">` and `<tg-emoji>` tags work. When a text changed after its caption was made, the caption is marked, and **Rebuild from text** recreates it (discarding your edits to that caption).
 
 **6. Publish.**
-1. Tick the channels to send; none are ticked at first. For a video post, a channel can be ticked once its video is rendered and up to date, and sending waits until all of the post's videos have rendered.
+1. Tick the channels to send; none are ticked at first. The channels are numbered in `channels.json` order, and **All channels** in the table header ticks or unticks every channel that has its image (or current video) and a caption; it shows half-ticked when only some are ticked. For a video post, a channel can be ticked once its video is rendered and up to date, and sending waits until all of the post's videos have rendered.
 2. Tap **Send previews**. The posts go to the review channel (`catch_all_channel`), a few seconds apart to stay within Telegram's limits. Each row shows its progress, then a **view** link.
 3. The review chat then appears below the buttons, live: the previews arrive in it, with your colleagues' reactions and who reacted. A preview's **view** link scrolls to it.
 4. Tap **Publish to live channels** and confirm. Each ticked channel gets its post at its `chat_id`, again a few seconds apart. Video posts go out as streamable Telegram videos with the caption, using the channel's still as the thumbnail; uploading them takes longer than photos.
 5. After publishing, the previews of the channels that were published are **deleted from the review channel**: every preview VTP sent for them, and nothing else. If Telegram refuses (for example, no right to delete messages in a review *channel*), a message says so and the posts stay published.
 6. **Published posts** appear as cards, one per channel, each showing the post as it looks in its channel. Reactions update live and views every minute; **↗** opens the post in the Telegram tab. While some previews remain, the review chat stays below the cards; it disappears once everything is published.
+7. **Start over** under the cards goes back to the Telegram tab's chat list, with nothing selected, to pick the next news item.
 
 You can leave a post at any step and come back later from **Posts**, for example to fix a caption and send its preview again.
 

@@ -94,11 +94,19 @@ async def telegram_call(coro):
 # ==========================================
 # PAGE AND STATIC FILES
 # ==========================================
+# "no-cache" makes the browser check for a newer version on every load (answered with 304 when unchanged);
+# without it, browsers kept running old scripts after an update
+class PageFiles(StaticFiles):
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
 @app.get("/")
 async def index():
-    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+    return FileResponse(os.path.join(WEB_DIR, "index.html"), headers={"Cache-Control": "no-cache"})
 
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+app.mount("/static", PageFiles(directory=WEB_DIR), name="static")
 
 @app.get("/fonts/{name}")
 async def font_file(name: str):

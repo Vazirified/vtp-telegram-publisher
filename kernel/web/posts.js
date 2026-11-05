@@ -664,12 +664,31 @@ class PostView {
       card.append(h("p", { class: "warn" }, "Telegram isn't connected. ", h("a", { href: "#/setup" }, "Open Setup"), "."));
     }
 
+    // "All channels" ticks every channel that has an image and a caption; half-ticked when only some are
+    const readyNames = d.channels.filter((c) => c.image && c.caption !== null).map((c) => c.name);
+    const boxes = new Map();
+    const allBox = h("input", { type: "checkbox", disabled: !readyNames.length || !!running });
+    const syncAll = () => {
+      const count = readyNames.filter((name) => this.chosenChannels.has(name)).length;
+      allBox.checked = count > 0 && count === readyNames.length;
+      allBox.indeterminate = count > 0 && count < readyNames.length;
+    };
+    allBox.addEventListener("change", () => {
+      for (const name of readyNames) {
+        if (allBox.checked) this.chosenChannels.add(name);
+        else this.chosenChannels.delete(name);
+        boxes.get(name).checked = allBox.checked;
+      }
+    });
+
     const rows = d.channels.map((c) => {
       const ready = c.image && c.caption !== null;
       const box = h("input", { type: "checkbox", checked: ready && this.chosenChannels.has(c.name), disabled: !ready || !!running });
+      if (ready) boxes.set(c.name, box);
       box.addEventListener("change", () => {
         if (box.checked) this.chosenChannels.add(c.name);
         else this.chosenChannels.delete(c.name);
+        syncAll();
       });
       return h("tr", {},
         h("td", {}, h("label", { class: "check" }, box, h("span", {}, c.name), h("span", { class: "muted" }, ` · ${c.language}`)),
@@ -678,6 +697,7 @@ class PostView {
         h("td", {}, this.sendResult(c, "previews")),
         h("td", {}, this.sendResult(c, "published")));
     });
+    syncAll();
 
     const chosen = () => d.channels.filter((c) => this.chosenChannels.has(c.name) && c.image && c.caption !== null).map((c) => c.name);
     const send = (kind, button, busy) => withButton(button, busy, async () => {
@@ -705,7 +725,7 @@ class PostView {
             + "Publishing deletes the published channels' previews from it."]
           : "No review channel is set in channels.json, so previews are off."),
       h("table", { class: "publish-table" },
-        h("thead", {}, h("tr", {}, h("th", {}, "Channel"), h("th", {}, "Preview"), h("th", {}, "Live"))),
+        h("thead", {}, h("tr", {}, h("th", {}, h("label", { class: "check" }, allBox, h("span", {}, "All channels"))), h("th", {}, "Preview"), h("th", {}, "Live"))),
         h("tbody", {}, rows)),
       running ? h("p", { class: "muted" },
         `${running.kind === "previews" ? "Sending previews" : "Publishing"}: ${Object.keys(running.results).length} of ${running.channels.length} done. `

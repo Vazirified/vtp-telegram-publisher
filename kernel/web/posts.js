@@ -222,6 +222,36 @@ class NewPostView {
 // version's grid, the area may extend into it to add space around the subject.
 const AOI_MARGIN = 0.25;
 
+// Which post sections were last left open, kept in this browser for every post
+const SECTIONS_KEY = "vtp.postSections";
+
+function loadSectionState() {
+  try {
+    return JSON.parse(localStorage.getItem(SECTIONS_KEY)) || {};
+  } catch {
+    return {}; // storage blocked (e.g. a private window): use the defaults
+  }
+}
+
+/** A post section that folds away under its heading. Only the body is redrawn, so it stays open or closed. */
+function postSection(key, title, defaultOpen) {
+  const saved = loadSectionState()[key];
+  const body = h("div");
+  const card = h("details", { class: "card post-section", open: typeof saved === "boolean" ? saved : defaultOpen },
+    h("summary", {}, h("h2", {}, title)), body);
+  // "toggle" also fires when a section is created open; only a change from the default is a choice to keep
+  card.addEventListener("toggle", () => {
+    const state = loadSectionState();
+    if (!(key in state) && card.open === defaultOpen) return;
+    try {
+      localStorage.setItem(SECTIONS_KEY, JSON.stringify({ ...state, [key]: card.open }));
+    } catch {
+      /* not remembered, nothing else breaks */
+    }
+  });
+  return { card, body };
+}
+
 class PostView {
   constructor(name) {
     this.name = name;
@@ -248,22 +278,27 @@ class PostView {
     for (const job of this.detail.jobs) this.jobs.set(job.kind, job);
     this.renderOptions = { aoi: this.detail.render.aoi, blur: this.detail.render.blur };
 
-    this.textsCard = h("section", { class: "card" });
-    this.imagesCard = h("section", { class: "card" });
-    this.captionsCard = h("section", { class: "card" });
+    // Until the user opens or closes one, captions start folded: they rarely need changes
+    const texts = postSection("texts", "1. Texts", true);
+    const images = postSection("images", "2. Images", true);
+    const captions = postSection("captions", "3. Captions", false);
+    const publish = postSection("publish", "4. Publish", true);
+    this.textsCard = texts.body;
+    this.imagesCard = images.body;
+    this.captionsCard = captions.body;
     // The controls are redrawn on every progress update. The published posts and the review chat
     // below them keep their elements across redraws, so loaded messages and scroll positions survive.
     this.publishControls = h("div");
     this.publishedSection = h("div", { class: "published-section" });
     this.reviewSection = h("div", { class: "review-embed" });
-    this.publishCard = h("section", { class: "card" }, this.publishControls, this.publishedSection, this.reviewSection);
+    publish.body.append(this.publishControls, this.publishedSection, this.reviewSection);
     const created = this.detail.created ? dateTimeFormat.format(new Date(this.detail.created)) : "";
     viewRoot().replaceChildren(h("div", { class: "page wide" },
       h("div", { class: "page-head" },
         h("a", { href: "#/posts" }, "← Posts"),
         h("h1", { dir: "auto" }, this.detail.title),
         h("small", { class: "muted" }, created)),
-      this.textsCard, this.imagesCard, this.captionsCard, this.publishCard));
+      texts.card, images.card, captions.card, publish.card));
 
     this.renderTexts();
     this.renderImages();
@@ -298,7 +333,6 @@ class PostView {
   renderTexts() {
     const card = this.textsCard;
     card.replaceChildren(
-      h("h2", {}, "1. Texts"),
       h("p", { class: "muted small" }, "Changes are saved automatically. The headline is drawn on the images; captions are made from the headline and the body."));
     for (const lang of this.detail.languages) {
       const headline = h("input", { type: "text", dir: "auto", value: lang.headline });
@@ -328,7 +362,7 @@ class PostView {
   renderImages() {
     const card = this.imagesCard;
     const d = this.detail;
-    card.replaceChildren(h("h2", {}, "2. Images"));
+    card.replaceChildren();
     if (!d.raw_image) {
       card.append(h("p", { class: "error" }, "This post has no photo (raw_image.*)."));
       return;
@@ -470,7 +504,6 @@ class PostView {
   renderCaptions() {
     const card = this.captionsCard;
     card.replaceChildren(
-      h("h2", {}, "3. Captions"),
       h("p", { class: "muted small" }, "Telegram HTML: <b>bold</b>, <i>italic</i>, <a href=\"...\">links</a> and <tg-emoji> tags work. Changes are saved automatically."));
     for (const c of this.detail.channels) {
       const error = h("p", { class: "error", hidden: true });
@@ -658,7 +691,7 @@ class PostView {
     const d = this.detail;
     const running = [...this.jobs.values()].find((j) => j.status === "running");
     const error = h("p", { class: "error", hidden: true });
-    card.replaceChildren(h("h2", {}, "4. Publish"));
+    card.replaceChildren();
 
     if (!telegramReady()) {
       card.append(h("p", { class: "warn" }, "Telegram isn't connected. ", h("a", { href: "#/setup" }, "Open Setup"), "."));

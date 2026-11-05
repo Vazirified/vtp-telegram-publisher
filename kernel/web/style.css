@@ -821,6 +821,31 @@ a.btn.primary { color: var(--accent-text); }
   object-fit: cover;
 }
 
+/* Post sections fold away under their heading */
+.post-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.post-section > summary::-webkit-details-marker { display: none; }
+.post-section > summary h2 { margin: 0; }
+.post-section[open] > summary { margin-bottom: 8px; }
+
+/* A chevron pointing right when folded, down when open */
+.post-section > summary::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+.post-section[open] > summary::before { transform: rotate(45deg); }
+
 /* Texts */
 .lang-block {
   border-top: 1px solid var(--border);

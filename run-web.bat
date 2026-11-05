@@ -16,12 +16,12 @@ if not exist .venv\Scripts\activate.bat goto MISSING_VENV
 call .venv\Scripts\activate
 
 :: Older installs don't have the web packages yet
-python -c "import fastapi, uvicorn" >nul 2>&1
+python -c "import fastapi, uvicorn, imageio_ffmpeg" >nul 2>&1
 if errorlevel 1 goto INSTALL_PACKAGES
 goto LAUNCH_SERVER
 
 :INSTALL_PACKAGES
-echo [~] Installing the web interface packages (fastapi, uvicorn)...
+echo [~] Installing the web interface packages (fastapi, uvicorn, imageio-ffmpeg)...
 python -m pip install -r requirements.txt
 if errorlevel 1 goto INSTALL_FAILED
 

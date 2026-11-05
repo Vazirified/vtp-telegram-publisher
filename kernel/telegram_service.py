@@ -66,6 +66,10 @@ def is_source_photo(msg):
         return True
     return bool(msg.document and not is_pack_sticker(msg) and msg.file and (msg.file.mime_type or "").startswith("image/"))
 
+def is_source_video(msg):
+    """True if the message holds a video (incl. Telegram "GIFs" and round videos) that can be a post's video."""
+    return bool(msg.document and not is_pack_sticker(msg) and msg.file and (msg.file.mime_type or "").startswith("video/"))
+
 def largest_size(sizes):
     """[width, height] of the largest photo size or thumbnail that has dimensions, or None."""
     sized = [s for s in (sizes or []) if getattr(s, "w", None) and getattr(s, "h", None)]
@@ -145,6 +149,7 @@ def message_to_dict(msg, names=None):
         # Plain text, used as the source text when a post is started from selected messages
         "text": msg.message or "",
         "source_photo": is_source_photo(msg),
+        "source_video": is_source_video(msg),
         "media": media_label(msg),
         "file_name": msg.file.name if msg.document and msg.file else None,
         "has_image": has_preview_image(msg),
@@ -522,14 +527,14 @@ class TelegramService:
 
         return await self.cached_download(f"avatar_{chat_id}_{photo_id}", download)
 
-    async def download_source_photo(self, chat_id, msg_id, target):
-        """Downloads a message's full photo to `target` (Telethon adds the extension) and returns the path."""
+    async def download_source_media(self, chat_id, msg_id, target):
+        """Downloads a message's full photo or video to `target` (Telethon adds the extension) and returns the path."""
         msg = await self.client.get_messages(chat_id, ids=msg_id)
-        if not msg or not is_source_photo(msg):
-            raise ValueError("This message has no photo.")
+        if not msg or not (is_source_photo(msg) or is_source_video(msg)):
+            raise ValueError("This message has no photo or video.")
         path = await self.client.download_media(msg, file=target)
         if not path:
-            raise ValueError("Telegram didn't return the photo. Try again.")
+            raise ValueError("Telegram didn't return the file. Try again.")
         return path
 
     async def custom_emoji_image(self, document_id):

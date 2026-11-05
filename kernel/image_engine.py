@@ -6,7 +6,8 @@ import tkinter as tk
 from common import (
     PROJECT_ROOT,
     load_channels_config, get_latest_session_directory, input_with_timeout,
-    load_gemini_credentials, select_operational_model,
+    load_gemini_credentials, select_operational_model, find_raw_video, load_video_info,
+    VIDEO_FRAME, VIDEO_PREVIEW,
 )
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk, ImageOps, ImageFilter, features
@@ -86,9 +87,17 @@ def wrap_text(text, font, max_width, draw, is_rtl=False, custom_reshaper=None, l
     if current_line: lines.append(' '.join(current_line))
     return lines
 
-def select_aoi_on_image(image_path):
+# How often the area window shows the next video frame (ms)
+PLAYBACK_INTERVAL = 66
+
+def select_aoi_on_image(image_path, start_playback=None):
+    """Lets the user click two corners of the area of interest on the photo; returns the box or None.
+
+    For a video, image_path is its still frame and start_playback(size) returns a player
+    (video_engine.LoopingFrames) whose frames, at the photo's size in the window, replace it.
+    """
     root = tk.Tk()
-    root.title("Define AOI (Dark grey is extendable margin for padding)")
+    root.title("Define AOI (Dark grey is extendable margin for padding)" + (" - the video plays in a loop" if start_playback else ""))
     img = Image.open(image_path).convert("RGBA")
     w, h = img.size
 
@@ -118,13 +127,47 @@ def select_aoi_on_image(image_path):
     label.pack()
 
     points = []
+    next_frame_timer = None
+
+    def close():
+        # A frame call still scheduled would run later, e.g. while input() waits at the console,
+        # and fail with "invalid command name" because the window is gone
+        if next_frame_timer:
+            root.after_cancel(next_frame_timer)
+        root.quit(); root.destroy()
+
     def on_click(event):
         points.append((event.x, event.y))
         if len(points) == 2:
-            root.quit(); root.destroy()
+            close()
 
     label.bind("<Button-1>", on_click)
-    root.mainloop()
+    root.protocol("WM_DELETE_WINDOW", close)
+
+    player = None
+    if start_playback:
+        # Frames are drawn where the photo is in the scaled-down window
+        shown = preview.width / pad_w
+        frame_size = (round(w * shown), round(h * shown))
+        frame_pos = (round(offset_x * shown), round(offset_y * shown))
+        player = start_playback(frame_size)
+
+        def show_next_frame():
+            nonlocal next_frame_timer
+            frame = player.latest()
+            if frame is not None:
+                canvas = preview.copy()
+                canvas.paste(frame, frame_pos)
+                label.photo = ImageTk.PhotoImage(canvas)
+                label.configure(image=label.photo)
+            next_frame_timer = root.after(PLAYBACK_INTERVAL, show_next_frame)
+        next_frame_timer = root.after(PLAYBACK_INTERVAL, show_next_frame)
+
+    try:
+        root.mainloop()
+    finally:
+        if player:
+            player.close()
 
     if len(points) == 2:
         scale_x = pad_w / preview.width
@@ -204,6 +247,43 @@ def shrink_font_size(headline, style, font_size, is_rtl, lang_code, custom_resha
             break
     return font_size
 
+def snippet_geometry(width, height, target_size, aoi=None):
+    """Where a photo of width x height goes in the target area, as numbers.
+
+    The video engine places every frame with the same numbers. Returns {"mode": "fit"} (center
+    crop) without an area. With one, "bounds" is the photo's box extended to include the area
+    (transparent outside the photo) and "area" is the area inside bounds. Then mode "pad" fits
+    the area inside the target, used when it covers most of the photo; mode "crop" scales the
+    bounds to cover the target ("scaled_size") and cuts "window" out of it around the area.
+    """
+    if not aoi:
+        return {"mode": "fit"}
+    target_w, target_h = target_size
+
+    min_x = min(0, aoi[0])
+    min_y = min(0, aoi[1])
+    max_x = max(width, aoi[2])
+    max_y = max(height, aoi[3])
+    bounds = (min_x, min_y, max_x, max_y)
+    area = (aoi[0] - min_x, aoi[1] - min_y, aoi[2] - min_x, aoi[3] - min_y)
+    bounds_w, bounds_h = max_x - min_x, max_y - min_y
+
+    area_ratio = ((area[2] - area[0]) * (area[3] - area[1])) / (bounds_w * bounds_h)
+    if area_ratio > 0.60:
+        return {"mode": "pad", "bounds": bounds, "area": area}
+
+    scale = max(target_w / bounds_w, target_h / bounds_h)
+    new_w, new_h = int(bounds_w * scale), int(bounds_h * scale)
+
+    area_center_x = ((area[0] + area[2]) / 2) * scale
+    area_center_y = ((area[1] + area[3]) / 2) * scale
+
+    ideal_x, ideal_y = area_center_x - (target_w / 2), area_center_y - (target_h / 2)
+    crop_x = max(0, min(ideal_x, new_w - target_w))
+    crop_y = max(0, min(ideal_y, new_h - target_h))
+    return {"mode": "crop", "bounds": bounds, "area": area, "scaled_size": (new_w, new_h),
+            "window": (crop_x, crop_y, crop_x + target_w, crop_y + target_h)}
+
 def compose_image(raw_path, layout, aoi=None, blur_radius=30):
     """Places the photo on a blurred copy of itself and overlays the channel template.
 
@@ -213,45 +293,18 @@ def compose_image(raw_path, layout, aoi=None, blur_radius=30):
 
     raw_img = Image.open(raw_path).convert("RGBA")
     target_size = (placement["width"], placement["height"])
-    target_w, target_h = target_size
+    geometry = snippet_geometry(raw_img.width, raw_img.height, target_size, aoi)
 
-    if aoi:
-        min_x = min(0, aoi[0])
-        min_y = min(0, aoi[1])
-        max_x = max(raw_img.width, aoi[2])
-        max_y = max(raw_img.height, aoi[3])
-
-        if min_x < 0 or min_y < 0 or max_x > raw_img.width or max_y > raw_img.height:
-            raw_img = raw_img.crop((min_x, min_y, max_x, max_y))
-            adjusted_aoi = (
-                aoi[0] - min_x, aoi[1] - min_y,
-                aoi[2] - min_x, aoi[3] - min_y
-            )
-        else:
-            adjusted_aoi = aoi
-
-        aoi_w = adjusted_aoi[2] - adjusted_aoi[0]
-        aoi_h = adjusted_aoi[3] - adjusted_aoi[1]
-        aoi_area_ratio = (aoi_w * aoi_h) / (raw_img.width * raw_img.height)
-
-        if aoi_area_ratio > 0.60:
-            cropped_aoi = raw_img.crop(adjusted_aoi)
-            snippet = ImageOps.pad(cropped_aoi, target_size, color=(0,0,0,0))
-        else:
-            scale = max(target_w / raw_img.width, target_h / raw_img.height)
-            new_w, new_h = int(raw_img.width * scale), int(raw_img.height * scale)
-            resized_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-            aoi_center_x = ((adjusted_aoi[0] + adjusted_aoi[2]) / 2) * scale
-            aoi_center_y = ((adjusted_aoi[1] + adjusted_aoi[3]) / 2) * scale
-
-            ideal_x, ideal_y = aoi_center_x - (target_w / 2), aoi_center_y - (target_h / 2)
-            crop_x = max(0, min(ideal_x, new_w - target_w))
-            crop_y = max(0, min(ideal_y, new_h - target_h))
-
-            snippet = resized_img.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
-    else:
+    if geometry["mode"] == "fit":
         snippet = ImageOps.fit(raw_img, target_size, centering=(0.5, 0.5))
+    else:
+        if geometry["bounds"] != (0, 0, raw_img.width, raw_img.height):
+            raw_img = raw_img.crop(geometry["bounds"])
+        if geometry["mode"] == "pad":
+            snippet = ImageOps.pad(raw_img.crop(geometry["area"]), target_size, color=(0,0,0,0))
+        else:
+            resized_img = raw_img.resize(geometry["scaled_size"], Image.Resampling.LANCZOS)
+            snippet = resized_img.crop(geometry["window"])
 
     canvas_w, canvas_h = layout.get("canvas_size", [1000, 1000])
 
@@ -288,6 +341,28 @@ def draw_headline(canvas, headline_layout, style, is_rtl, lang_code, custom_resh
         draw.text((line_start_x, current_y), text_to_draw, font=font, fill=style["color"], **layout_args)
         current_y += headline_layout["line_height"]
 
+def draw_channel_headline(canvas, session_dir, profile, headline=None, font_size=None):
+    """Draws a channel's headline on canvas.
+
+    headline defaults to the first line of <lang>.md, font_size to the channel's font_size.
+    Returns {"headline", "font_size", "fits"}.
+    """
+    lang_code = profile.get("language", "en").lower()
+    is_rtl = profile.get("is_rtl", False)
+    style = headline_style(profile["image_layout"], is_rtl)
+    custom_reshaper = make_rtl_reshaper(is_rtl)
+
+    if headline is None:
+        headline = extract_markdown_headline(os.path.join(session_dir, f"{lang_code}.md"))
+    font_size = font_size or style["font_size"]
+
+    fits = True
+    if headline:
+        headline_layout = layout_headline(headline, style, font_size, is_rtl, lang_code, custom_reshaper)
+        draw_headline(canvas, headline_layout, style, is_rtl, lang_code, custom_reshaper)
+        fits = headline_layout["fits"]
+    return {"headline": headline, "font_size": font_size, "fits": fits}
+
 def render_channel(session_dir, channel_name, profile, raw_path, aoi=None, blur_radius=30, headline=None, font_size=None):
     """Renders <channel>_broadcast.jpg without asking anything.
 
@@ -295,30 +370,15 @@ def render_channel(session_dir, channel_name, profile, raw_path, aoi=None, blur_
     The image is written even when the headline overflows, so the result can be inspected.
     Returns {"path", "headline", "font_size", "fits"}.
     """
-    lang_code = profile.get("language", "en").lower()
-    is_rtl = profile.get("is_rtl", False)
-    layout = profile["image_layout"]
-    style = headline_style(layout, is_rtl)
-    custom_reshaper = make_rtl_reshaper(is_rtl)
-
-    if headline is None:
-        headline = extract_markdown_headline(os.path.join(session_dir, f"{lang_code}.md"))
-    font_size = font_size or style["font_size"]
-
-    canvas = compose_image(raw_path, layout, aoi, blur_radius)
-
-    fits = True
-    if headline:
-        headline_layout = layout_headline(headline, style, font_size, is_rtl, lang_code, custom_reshaper)
-        draw_headline(canvas, headline_layout, style, is_rtl, lang_code, custom_reshaper)
-        fits = headline_layout["fits"]
+    canvas = compose_image(raw_path, profile["image_layout"], aoi, blur_radius)
+    result = draw_channel_headline(canvas, session_dir, profile, headline, font_size)
 
     final_hd_image = canvas.convert("RGB")
     out_path = os.path.join(session_dir, f"{channel_name}_broadcast.jpg")
     final_hd_image.save(out_path, "JPEG", quality=100, subsampling=0)
 
     print(f"  [+] Generated: {channel_name}_broadcast.jpg")
-    return {"path": out_path, "headline": headline, "font_size": font_size, "fits": fits}
+    return dict(result, path=out_path)
 
 def ask_until_headline_fits(session_dir, channel_name, profile):
     """Shows the overflow menu in the terminal until the channel's headline fits.
@@ -379,22 +439,35 @@ def ask_until_headline_fits(session_dir, channel_name, profile):
     return headline, font_size
 
 def render_channel_assets(session_dir=None):
-    """Renders every channel's image, asking for the AOI, blur and overflow fixes in the terminal."""
+    """Renders every channel's image, asking for the AOI, blur and overflow fixes in the terminal.
+
+    For a video post the images are stills from its frame, and every channel's video follows.
+    """
     session_dir = session_dir or get_latest_session_directory()
     if not session_dir:
         print("[ERROR] No session directory found inside _workspace.")
         return
 
     config = load_channels_config()
-    raw_path = find_raw_image(session_dir)
-    if not raw_path:
-        print(f"[ERROR] Could not find any raw_image.* inside {session_dir}")
+    video_path = find_raw_video(session_dir)
+    if video_path:
+        # Imported here: video_engine imports this module
+        import video_engine
+        raw_path = os.path.join(session_dir, VIDEO_FRAME)
+        video_info = load_video_info(session_dir)
+        preview_path = os.path.join(session_dir, VIDEO_PREVIEW)
+        start_playback = lambda size: video_engine.LoopingFrames(preview_path, size)
+    else:
+        raw_path = find_raw_image(session_dir)
+        start_playback = None
+    if not raw_path or not os.path.exists(raw_path):
+        print(f"[ERROR] Could not find any raw_image.* (or a video's {VIDEO_FRAME}) inside {session_dir}")
         return
 
     global_aoi = None
     aoi_choice = input_with_timeout("[?] Define manual AOI? (y/n)", "n")
     if aoi_choice.lower() in ['y', 'yes']:
-        global_aoi = select_aoi_on_image(raw_path)
+        global_aoi = select_aoi_on_image(raw_path, start_playback)
 
     if not RAQM_AVAILABLE:
         print("[!] Raqm text layout is unavailable (FriBiDi library not found).")
@@ -407,9 +480,30 @@ def render_channel_assets(session_dir=None):
         print("  [!] Invalid input. Defaulting to 30.")
         blur_radius = 30
 
+    mute = False
+    if video_path and video_info.get("audio"):
+        mute = input_with_timeout("[?] Mute the videos? (y/n)", "n").lower() in ['y', 'yes']
+
+    headlines = []
     for channel_name, profile in config["channels"].items():
         headline, font_size = ask_until_headline_fits(session_dir, channel_name, profile)
         render_channel(session_dir, channel_name, profile, raw_path, global_aoi, blur_radius, headline, font_size)
+        headlines.append((channel_name, profile, headline, font_size))
+
+    if not video_path:
+        return
+    # The videos last, so the prompts above don't wait for them
+    print(f"\n[~] Rendering the videos{' without sound' if mute else ''}...")
+    frame_size = (video_info["width"], video_info["height"])
+    for channel_name, profile, headline, font_size in headlines:
+        try:
+            video_engine.render_channel_video(
+                session_dir, channel_name, profile, video_path, video_info, frame_size, global_aoi, blur_radius,
+                headline, font_size, video_engine.terminal_progress(f"Rendering video for {channel_name}"), mute)
+        except video_engine.VideoError as e:
+            video_engine.end_progress_line(f"  [ERROR] {e}")
+            continue
+        video_engine.end_progress_line(f"  [+] Generated: {channel_name}_broadcast.mp4")
 
 if __name__ == "__main__":
     render_channel_assets()

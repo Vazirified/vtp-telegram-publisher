@@ -811,15 +811,45 @@ a.btn.primary { color: var(--accent-text); }
   text-align: center;
   font-size: 13px;
   color: var(--muted);
+  position: relative;
 }
 .photo-choice.chosen { border: 3px solid var(--accent); }
 .photo-choice.upload { border-style: dashed; padding: 8px; }
 
-.photo-choice img {
+.photo-choice img, .photo-choice video {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+
+/* A video (no picture, or one the browser can't play) shown by name */
+.video-tile {
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+
+/* Marks a video among photos */
+.play-mark {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.post-thumb {
+  position: relative;
+  flex: none;
+  display: flex;
+}
+.post-thumb .play-mark { left: 4px; bottom: 4px; width: 20px; height: 20px; font-size: 9px; }
 
 /* Post sections fold away under their heading */
 .post-section > summary {
@@ -932,6 +962,39 @@ a.btn.primary { color: var(--accent-text); }
   object-fit: contain;
   background: #000;
 }
+
+.channel-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: #000;
+  cursor: pointer;
+}
+
+.video-card { position: relative; }
+.play-mark.big {
+  left: 50%;
+  top: 50%;
+  bottom: auto;
+  width: 48px;
+  height: 48px;
+  margin: -24px 0 0 -24px;
+  font-size: 20px;
+}
+.play-mark[hidden] { display: none; }
+
+/* A video post's still while its video isn't rendered */
+.render-status {
+  padding: 8px 10px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 13px;
+}
+.render-status:empty { display: none; }
+.render-status progress { width: 100%; }
 
 .no-image {
   aspect-ratio: 1;

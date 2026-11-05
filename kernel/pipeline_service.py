@@ -1,5 +1,4 @@
 """Post (session folder) operations for the web interface, built on the engines' functions."""
-import io
 import os
 import re
 import glob
@@ -9,20 +8,29 @@ import shutil
 import datetime
 
 # Imported before PIL (through image_engine) so the bundled FriBiDi is on PATH
-from common import WORKSPACE_DIR, load_channels_config, load_gemini_credentials, save_gemini_credentials
+from common import (
+    WORKSPACE_DIR, RAW_VIDEO, VIDEO_INFO, VIDEO_FRAME, VIDEO_PREVIEW,
+    load_channels_config, load_gemini_credentials, save_gemini_credentials,
+    find_raw_video, load_video_info,
+)
 import text_engine
 import image_engine
+import video_engine
 import publisher
 from PIL import Image
 
-# Photos uploaded from the browser or downloaded from a chat, before a post exists
+# Photos and videos uploaded from the browser or downloaded from a chat, before a post exists
 UPLOADS_DIR = os.path.join(WORKSPACE_DIR, "web_uploads")
 MAX_UPLOAD_BYTES = 30 * 1024 * 1024
-UPLOAD_NAME = re.compile(r"[0-9a-f]{32}\.(jpg|png|webp|avif)")
+# Telegram's limit for uploads
+MAX_VIDEO_BYTES = 2000 * 1024 * 1024
 UPLOAD_FORMATS = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp", "AVIF": ".avif"}
+VIDEO_EXTENSIONS = set(video_engine.CONTAINER_EXTENSIONS.values()) | {video_engine.DEFAULT_EXTENSION}
+UPLOAD_NAME = re.compile(r"[0-9a-f]{32}(%s)" % "|".join(
+    re.escape(ext) for ext in sorted(set(UPLOAD_FORMATS.values()) | VIDEO_EXTENSIONS)))
 
 SESSION_NAME = re.compile(r"session_[0-9A-Za-z_-]+")
-SESSION_IMAGE = re.compile(r"[0-9A-Za-z_.-]+\.(jpg|jpeg|png|webp|avif)", re.IGNORECASE)
+SESSION_FILE = re.compile(r"[0-9A-Za-z_.-]+\.(jpg|jpeg|png|webp|avif|mp4)", re.IGNORECASE)
 LANGUAGE_CODE = re.compile(r"[a-z]{2,3}")
 
 # Web-only state kept next to the session's files; the terminal pipeline ignores these
@@ -36,6 +44,9 @@ class PostError(Exception):
 
 class PostNotFound(Exception):
     """An unknown post, channel, photo or file."""
+
+class RenderCancelled(Exception):
+    """Raised by a progress callback to stop rendering videos."""
 
 # ==========================================
 # SESSIONS
@@ -95,7 +106,7 @@ def list_sessions(limit=100):
         name = os.path.basename(path)
         title = (read_text(path, "en") or ("", ""))[0]
         images = sorted(os.path.basename(p) for p in glob.glob(os.path.join(path, "*_broadcast.jpg")))
-        raw = image_engine.find_raw_image(path)
+        raw = still_source(path)
         thumbnail = images[0] if images else (os.path.basename(raw) if raw else None)
         log = load_publish_log(path)
         sessions.append({
@@ -105,6 +116,8 @@ def list_sessions(limit=100):
             "thumbnail": thumbnail,
             "thumbnail_version": int(mtime(os.path.join(path, thumbnail))) if thumbnail else None,
             "images": len(images),
+            "video": bool(find_raw_video(path)),
+            "videos": len(glob.glob(os.path.join(path, "*_broadcast.mp4"))),
             "previews": len(log.get("previews", {})),
             "published": len([e for e in log.get("published", {}).values() if e.get("msg_id")]),
         })
@@ -113,37 +126,64 @@ def list_sessions(limit=100):
 # ==========================================
 # NEW POSTS
 # ==========================================
-def save_upload(data):
-    """Stores an uploaded photo and returns its token. Raises PostError if it isn't a JPG/PNG/WebP/AVIF."""
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise PostError("The photo is larger than 30 MB.")
+def new_upload_path(prefix="upload"):
+    """Where an upload (or a download from Telegram, which adds an extension) is written before it's checked."""
+    os.makedirs(UPLOADS_DIR, exist_ok=True)
+    return os.path.join(UPLOADS_DIR, f"{prefix}_{uuid.uuid4().hex}")
+
+def photo_extension(path):
+    """The token extension of a photo VTP accepts; None if the file isn't a photo at all."""
     try:
-        with Image.open(io.BytesIO(data)) as img:
+        with Image.open(path) as img:
             image_format = img.format
             img.verify()
     except Exception:
-        raise PostError("This file isn't a photo VTP can read. Use JPG, PNG, WebP or AVIF.")
+        return None
     if image_format not in UPLOAD_FORMATS:
         raise PostError(f"{image_format} photos aren't supported. Use JPG, PNG, WebP or AVIF.")
+    return UPLOAD_FORMATS[image_format]
 
-    os.makedirs(UPLOADS_DIR, exist_ok=True)
-    token = uuid.uuid4().hex + UPLOAD_FORMATS[image_format]
-    with open(os.path.join(UPLOADS_DIR, token), "wb") as f:
-        f.write(data)
-    return token
+def adopt_upload(path):
+    """Checks an uploaded or downloaded file and turns it into a token; a refused file is deleted.
 
-def new_download_path():
-    """Path without extension for a photo downloaded from Telegram; Telethon adds the extension."""
-    os.makedirs(UPLOADS_DIR, exist_ok=True)
-    return os.path.join(UPLOADS_DIR, "download_" + uuid.uuid4().hex)
-
-def adopt_download(path):
-    """Checks a photo downloaded from Telegram like an upload and returns its token."""
+    Accepts JPG/PNG/WebP/AVIF photos up to 30 MB and videos ffmpeg can read up to 2 GB. A video
+    is prepared here (still frame and browser copy), so problems show before translating.
+    """
     try:
-        with open(path, "rb") as f:
-            return save_upload(f.read())
+        size = os.path.getsize(path)
+        extension = photo_extension(path)
+        if extension and size > MAX_UPLOAD_BYTES:
+            raise PostError("The photo is larger than 30 MB.")
+        token = uuid.uuid4().hex + (extension or "")
+        if not extension:
+            if size > MAX_VIDEO_BYTES:
+                raise PostError("The video is larger than 2 GB.")
+            try:
+                info = video_engine.probe(path)
+            except video_engine.VideoError:
+                raise PostError("This file isn't a photo or video VTP can read. "
+                                "Use a JPG, PNG, WebP or AVIF photo, or a video.")
+            token += video_engine.CONTAINER_EXTENSIONS.get(info["container"], video_engine.DEFAULT_EXTENSION)
+            prepare_video(path, os.path.join(UPLOADS_DIR, token), info)
+        os.replace(path, os.path.join(UPLOADS_DIR, token))
+        return token
     finally:
-        os.remove(path)
+        if os.path.exists(path):
+            os.remove(path)
+
+def prepare_video(video_path, token_path, info):
+    """Writes <token>.frame.png, <token>.preview.mp4 and <token>.json next to an uploaded video."""
+    paths = [token_path + suffix for suffix in (".frame.png", ".preview.mp4", ".json")]
+    try:
+        video_engine.prepare_files(video_path, *paths, info)
+    except video_engine.VideoError as e:
+        for path in paths:
+            if os.path.exists(path):
+                os.remove(path)
+        raise PostError(str(e))
+
+def is_video_file(path):
+    return os.path.splitext(path)[1] in VIDEO_EXTENSIONS
 
 def clean_uploads(max_age_days=7):
     """Deletes uploaded photos older than max_age_days; a post keeps its own copy (raw_image.*)."""
@@ -158,11 +198,11 @@ def clean_uploads(max_age_days=7):
 def upload_path(token):
     path = os.path.join(UPLOADS_DIR, token)
     if not UPLOAD_NAME.fullmatch(token) or not os.path.isfile(path):
-        raise PostNotFound("The chosen photo is no longer available. Choose it again.")
+        raise PostNotFound("The chosen photo or video is no longer available. Choose it again.")
     return path
 
 def create_session(raw_text, image_token, model=None):
-    """Translates the text with Gemini, creates the session folder and stages the photo.
+    """Translates the text with Gemini, creates the session folder and stages the photo or video.
 
     Returns the session name. Raises PostError with a readable message when Gemini fails,
     so the user can try another model.
@@ -189,16 +229,28 @@ def create_session(raw_text, image_token, model=None):
     session_dir = text_engine.save_session(parsed)
 
     _, ext = os.path.splitext(image)
-    shutil.copy2(image, os.path.join(session_dir, f"raw_image{ext.lower()}"))
+    if is_video_file(image):
+        shutil.copy2(image, os.path.join(session_dir, RAW_VIDEO + ext))
+        for suffix, name in ((".frame.png", VIDEO_FRAME), (".preview.mp4", VIDEO_PREVIEW), (".json", VIDEO_INFO)):
+            shutil.copy2(image + suffix, os.path.join(session_dir, name))
+    else:
+        shutil.copy2(image, os.path.join(session_dir, f"raw_image{ext.lower()}"))
     ensure_captions(session_dir)
     return os.path.basename(session_dir)
 
 # ==========================================
-# IMAGES
+# IMAGES AND VIDEOS
 # ==========================================
+def still_source(session_dir):
+    """The picture the images are rendered from: the photo, or a video post's still frame."""
+    if find_raw_video(session_dir):
+        frame = os.path.join(session_dir, VIDEO_FRAME)
+        return frame if os.path.exists(frame) else None
+    return image_engine.find_raw_image(session_dir)
+
 def load_render_settings(session_dir):
     path = os.path.join(session_dir, RENDER_SETTINGS_FILE)
-    settings = {"aoi": None, "blur": DEFAULT_BLUR, "overrides": {}}
+    settings = {"aoi": None, "blur": DEFAULT_BLUR, "mute": False, "overrides": {}}
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             settings.update(json.load(f))
@@ -208,8 +260,11 @@ def save_render_settings(session_dir, settings):
     with open(os.path.join(session_dir, RENDER_SETTINGS_FILE), "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2, ensure_ascii=False)
 
-def set_render_options(session_dir, aoi, blur):
-    """aoi is [left, top, right, bottom] in photo pixels (may extend past the edges) or None."""
+def set_render_options(session_dir, aoi, blur, mute=False):
+    """aoi is [left, top, right, bottom] in photo pixels (may extend past the edges) or None.
+
+    mute leaves the sound out of a video post's videos.
+    """
     if aoi is not None:
         if len(aoi) != 4 or aoi[0] >= aoi[2] or aoi[1] >= aoi[3]:
             raise PostError("The area of interest needs two different corners.")
@@ -217,7 +272,7 @@ def set_render_options(session_dir, aoi, blur):
     if not 0 <= blur <= MAX_BLUR:
         raise PostError(f"Blur must be between 0 and {MAX_BLUR}.")
     settings = load_render_settings(session_dir)
-    settings["aoi"], settings["blur"] = aoi, int(blur)
+    settings["aoi"], settings["blur"], settings["mute"] = aoi, int(blur), bool(mute)
     save_render_settings(session_dir, settings)
 
 def channel_profile(config, channel):
@@ -245,9 +300,12 @@ def headline_fits(headline, style, font_size, profile):
     return layout["fits"]
 
 def render_channels(session_dir, channels=None):
-    """Renders the given channels (all by default) with the saved area, blur and overrides."""
+    """Renders the given channels' images (all by default) with the saved area, blur and overrides.
+
+    For a video post these are stills from its frame; the videos are rendered by render_videos().
+    """
     config = load_channels_config()
-    raw_path = image_engine.find_raw_image(session_dir)
+    raw_path = still_source(session_dir)
     if not raw_path:
         raise PostError("This post has no photo (raw_image.*).")
     settings = load_render_settings(session_dir)
@@ -259,6 +317,33 @@ def render_channels(session_dir, channels=None):
         override = settings["overrides"].get(name, {})
         image_engine.render_channel(session_dir, name, profile, raw_path, aoi, settings["blur"],
                                     override.get("headline"), override.get("font_size"))
+
+def render_videos(session_dir, channels, on_progress, on_done):
+    """Renders the channels' videos one after another with the saved area, blur, mute and overrides.
+
+    on_progress(channel, fraction) is called while encoding and may raise RenderCancelled to stop;
+    on_done(channel, error) follows each channel, with error None or the reason it failed.
+    """
+    config = load_channels_config()
+    video = find_raw_video(session_dir)
+    if not video:
+        raise PostError("This post has no video.")
+    info = load_video_info(session_dir)
+    settings = load_render_settings(session_dir)
+    aoi = tuple(settings["aoi"]) if settings["aoi"] else None
+
+    for name in channels:
+        profile = channel_profile(config, name)
+        override = settings["overrides"].get(name, {})
+        try:
+            video_engine.render_channel_video(
+                session_dir, name, profile, video, info, (info["width"], info["height"]), aoi, settings["blur"],
+                override.get("headline"), override.get("font_size"), lambda fraction: on_progress(name, fraction),
+                settings["mute"])
+        except video_engine.VideoError as e:
+            on_done(name, str(e))
+        else:
+            on_done(name, None)
 
 def set_override(session_dir, channel, headline=None, font_size=None):
     """Sets the image-only headline and/or font size of a channel; both None removes the override."""
@@ -400,12 +485,18 @@ def session_detail(name):
         languages.append({"code": lang, "exists": text is not None,
                           "headline": text[0] if text else "", "body": text[1] if text else ""})
 
-    raw_path = image_engine.find_raw_image(session_dir)
+    raw_path = still_source(session_dir)
     raw_image = None
     if raw_path:
         with Image.open(raw_path) as img:
             raw_image = {"file": os.path.basename(raw_path), "version": int(mtime(raw_path)),
                          "width": img.width, "height": img.height}
+    video = None
+    if find_raw_video(session_dir):
+        preview = os.path.join(session_dir, VIDEO_PREVIEW)
+        info = load_video_info(session_dir)
+        video = {"file": VIDEO_PREVIEW, "version": int(mtime(preview) or 0),
+                 "duration": info.get("duration"), "audio": info.get("audio", False)}
 
     log = load_publish_log(session_dir)
     channels = []
@@ -415,6 +506,8 @@ def session_detail(name):
         headline, font_size, style = image_headline(session_dir, channel, profile, settings)
         image_file = os.path.join(session_dir, f"{channel}_broadcast.jpg")
         image_time = mtime(image_file)
+        video_file = os.path.join(session_dir, f"{channel}_broadcast.mp4")
+        video_time = mtime(video_file) if video else None
         caption_file = caption_path(session_dir, channel)
         caption_time = mtime(caption_file)
         caption = None
@@ -434,6 +527,9 @@ def session_detail(name):
             "image": {"file": os.path.basename(image_file), "version": int(image_time)} if image_time else None,
             # The text was edited after the image or caption was made from it
             "image_outdated": bool(image_time and md_time and image_time < md_time),
+            "video": {"file": os.path.basename(video_file), "version": int(video_time)} if video_time else None,
+            # The image (the video's still) was rendered again, with settings the video doesn't have yet
+            "video_outdated": bool(video_time and image_time and video_time < image_time),
             "caption": caption,
             "caption_outdated": bool(caption_time and md_time and caption_time < md_time),
             "preview": log.get("previews", {}).get(channel),
@@ -446,7 +542,8 @@ def session_detail(name):
         "title": (read_text(session_dir, "en") or (name, ""))[0],
         "languages": languages,
         "raw_image": raw_image,
-        "render": {"aoi": settings["aoi"], "blur": settings["blur"]},
+        "video": video,
+        "render": {"aoi": settings["aoi"], "blur": settings["blur"], "mute": settings["mute"]},
         "channels": channels,
         "review_channel": config.get("catch_all_channel") or None,
         # Previews still in the review channel (deleted once their channel is published)
@@ -454,8 +551,8 @@ def session_detail(name):
     }
 
 def session_file(name, filename):
-    """Path of an image inside a session folder (raw photo or rendered image)."""
+    """Path of a picture or video inside a session folder (raw photo, frame, preview, renders)."""
     path = os.path.join(session_path(name), filename)
-    if not SESSION_IMAGE.fullmatch(filename) or not os.path.isfile(path):
-        raise PostNotFound("No such image.")
+    if not SESSION_FILE.fullmatch(filename) or not os.path.isfile(path):
+        raise PostNotFound("No such file.")
     return path

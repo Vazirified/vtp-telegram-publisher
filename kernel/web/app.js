@@ -4,7 +4,7 @@
 // HELPERS
 // ==========================================
 
-/** Fetches JSON from the server. `json` is sent as a POST body. Errors carry the server's message. */
+/** Fetches JSON from the server. `json` is sent as a POST body. Errors carry the server's message and `status`. */
 async function api(path, { json, ...init } = {}) {
   if (json !== undefined) {
     init.method = init.method || "POST";
@@ -15,7 +15,9 @@ async function api(path, { json, ...init } = {}) {
   let data = null;
   try { data = await response.json(); } catch { /* empty or non-JSON body */ }
   if (!response.ok) {
-    throw new Error(errorText(data) || `${response.status} ${response.statusText}`);
+    const error = new Error(errorText(data) || `${response.status} ${response.statusText}`);
+    error.status = response.status;
+    throw error;
   }
   return data;
 }
@@ -795,20 +797,23 @@ class TelegramView {
     this.selectBar.hidden = !messages.length;
     if (!messages.length) return;
     const photos = messages.filter((m) => m.source_photo).length;
+    const videos = messages.filter((m) => m.source_video).length;
+    const parts = [`${messages.length} message${messages.length > 1 ? "s" : ""}`, `${photos} photo${photos === 1 ? "" : "s"}`];
+    if (videos) parts.push(`${videos} video${videos === 1 ? "" : "s"}`);
     this.selectBar.replaceChildren(
-      h("span", { class: "select-summary" },
-        `${messages.length} message${messages.length > 1 ? "s" : ""}, ${photos} photo${photos === 1 ? "" : "s"}`),
+      h("span", { class: "select-summary" }, parts.join(", ")),
       h("button", { class: "btn", onclick: () => this.clearSelection() }, "Clear"),
       h("button", { class: "btn primary", onclick: () => this.startPost() }, "Start post"));
   }
 
-  /** Hands the selected messages to the New post page: texts in chat order, photos as choices. */
+  /** Hands the selected messages to the New post page: texts in chat order, photos and videos as choices. */
   startPost() {
     const messages = this.selectedMessages();
     const chatId = this.pane.id;
     app.draft = {
       text: messages.map((m) => m.text.trim()).filter(Boolean).join("\n\n"),
-      photos: messages.filter((m) => m.source_photo).map((m) => ({ chat_id: chatId, msg_id: m.id })),
+      photos: messages.filter((m) => m.source_photo || m.source_video)
+        .map((m) => ({ chat_id: chatId, msg_id: m.id, video: m.source_video, has_image: m.has_image })),
       source: this.pane.info ? this.pane.info.name : "",
     };
     app.draft.chosen = app.draft.photos.length ? { type: "telegram", ...app.draft.photos[0] } : null;

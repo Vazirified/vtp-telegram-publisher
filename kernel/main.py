@@ -5,6 +5,7 @@ sys.dont_write_bytecode = True
 import os
 import shutil
 import asyncio
+import mimetypes
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -14,10 +15,11 @@ try:
     import auth_manager
     import text_engine
     import image_engine
+    import video_engine
     import publisher
 except ImportError as e:
     print(f"[FATAL] Core module missing: {e}")
-    print("Please ensure auth_manager.py, text_engine.py, image_engine.py, publisher.py, and telethon are available.")
+    print("Please ensure auth_manager.py, text_engine.py, image_engine.py, video_engine.py, publisher.py, and telethon are available.")
     sys.exit(1)
 
 from common import WORKSPACE_DIR
@@ -430,7 +432,10 @@ def run_ingestion_gui():
     action_btn_frame.pack(side="right")
 
     def browse_image():
-        filepath = filedialog.askopenfilename(title="Select Raw Image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
+        photos = "*.png;*.jpg;*.jpeg"
+        videos = ";".join("*" + ext for ext in video_engine.VIDEO_FILE_EXTENSIONS)
+        filepath = filedialog.askopenfilename(title="Select Raw Image or Video", filetypes=[
+            ("Photos and videos", f"{photos};{videos}"), ("Photos", photos), ("Videos", videos)])
         if filepath: img_path_var.set(filepath)
 
     make_button(action_btn_frame, "Browse Local...", browse_image, width=15).pack(side="left", padx=(0, 10))
@@ -508,7 +513,7 @@ def run_ingestion_gui():
             messagebox.showerror("Missing Data", "Please paste or fetch the source text.")
             return
         if not img_path or not os.path.exists(img_path):
-            messagebox.showerror("Missing Data", "Please select a valid raw image file.")
+            messagebox.showerror("Missing Data", "Please select a valid raw image or video file.")
             return
 
         payload["text"] = raw_text
@@ -539,6 +544,16 @@ def main():
         print("[!] Ingestion cancelled or missing data. Aborting pipeline.")
         return
 
+    # A video (picked locally, or any video "Fetch from Telegram" downloaded) makes a video post.
+    # It's checked now, so an unreadable file stops the run before Gemini is asked.
+    video_info = None
+    if (mimetypes.guess_type(raw_image_path)[0] or "").startswith("video/"):
+        try:
+            video_info = video_engine.probe(raw_image_path)
+        except video_engine.VideoError as e:
+            print(f"[ERROR] {e} Aborting pipeline.")
+            return
+
     print("\n========================================================")
     print("  PHASE 2: TEXT PROCESSING")
     print("========================================================")
@@ -548,11 +563,21 @@ def main():
         print("[ERROR] Text pipeline failed to generate a session directory. Aborting.")
         return
 
-    print("\n[~] Staging Raw Image Asset...")
-    _, ext = os.path.splitext(raw_image_path)
-    staged_image_path = os.path.join(session_dir, f"raw_image{ext.lower()}")
-    shutil.copy2(raw_image_path, staged_image_path)
-    print(f"  [+] Image secured at: {staged_image_path}")
+    if video_info:
+        print("\n[~] Staging Raw Video Asset...")
+        try:
+            staged_video_path = video_engine.stage_video(raw_image_path, session_dir, video_info,
+                                                         video_engine.terminal_progress("Preparing the video"))
+        except video_engine.VideoError as e:
+            video_engine.end_progress_line(f"[ERROR] {e} Aborting pipeline.")
+            return
+        video_engine.end_progress_line(f"  [+] Video secured at: {staged_video_path}")
+    else:
+        print("\n[~] Staging Raw Image Asset...")
+        _, ext = os.path.splitext(raw_image_path)
+        staged_image_path = os.path.join(session_dir, f"raw_image{ext.lower()}")
+        shutil.copy2(raw_image_path, staged_image_path)
+        print(f"  [+] Image secured at: {staged_image_path}")
 
     print("\n========================================================")
     print("  PHASE 3: GRAPHICS RENDERING")

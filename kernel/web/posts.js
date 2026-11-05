@@ -87,13 +87,16 @@ async function renderPosts() {
   }
   list.replaceChildren(...sessions.map((s) => {
     const status = [];
-    if (s.images) status.push(`${s.images} images`);
+    if (s.video) status.push(s.videos ? `video · ${s.videos} rendered` : "video");
+    else if (s.images) status.push(`${s.images} images`);
     if (s.previews) status.push("previews sent");
     if (s.published) status.push(`published to ${s.published}`);
     return h("a", { class: "post-item", href: `#/post/${encodeURIComponent(s.name)}` },
-      s.thumbnail
-        ? h("img", { src: sessionFileUrl(s.name, s.thumbnail, s.thumbnail_version), alt: "", loading: "lazy" })
-        : h("span", { class: "post-thumb-empty" }),
+      h("span", { class: "post-thumb" },
+        s.thumbnail
+          ? h("img", { src: sessionFileUrl(s.name, s.thumbnail, s.thumbnail_version), alt: "", loading: "lazy" })
+          : h("span", { class: "post-thumb-empty" }),
+        s.video ? h("span", { class: "play-mark" }, "▶") : null),
       h("span", { class: "post-item-text" },
         h("strong", { dir: "auto" }, s.title),
         h("small", { class: "muted" }, [s.created ? dateTimeFormat.format(new Date(s.created)) : "", ...status].filter(Boolean).join(" · "))));
@@ -103,6 +106,26 @@ async function renderPosts() {
 // ==========================================
 // NEW POST
 // ==========================================
+// Browsers leave the type empty for some video files (e.g. .mkv)
+const VIDEO_NAME = /\.(mp4|m4v|mov|mkv|webm|avi|3gp|ts|mts|m2ts|flv|wmv|mpg|mpeg)$/i;
+const isVideoFile = (file) => file.type.startsWith("video/") || (!file.type && VIDEO_NAME.test(file.name));
+
+/** A silent video that plays in a loop, like the area editor's. */
+function loopingVideo(src, poster, className) {
+  const video = h("video", { class: className, src, poster, loop: true, playsinline: true, disablepictureinpicture: true });
+  video.muted = true; // must be set as a property for the browser to allow autoplay
+  video.play().catch(() => { /* shows the poster */ });
+  return video;
+}
+
+/** The uploaded video playing silently in its tile, or its name if the browser can't play it. */
+function uploadedVideo(url, fileName) {
+  const video = h("video", { src: url, loop: true, playsinline: true });
+  video.muted = true;
+  video.addEventListener("error", () => video.replaceWith(h("span", { class: "video-tile", dir: "auto" }, fileName)));
+  video.play().catch(() => { /* shown paused */ });
+  return video;
+}
 class NewPostView {
   async mount() {
     // The draft survives switching tabs, so a failed translation can be retried with another model
@@ -126,7 +149,7 @@ class NewPostView {
         draft.source ? h("p", { class: "muted" }, `From ${draft.source}. Edit it before translating if needed.`) : null,
         h("p", { class: "muted small" }, "Languages that are already in the text are kept as they are; missing ones are translated."),
         text),
-      h("div", { class: "card" }, h("h2", {}, "Photo"), this.photoGrid),
+      h("div", { class: "card" }, h("h2", {}, "Photo or video"), this.photoGrid),
       h("div", { class: "card" },
         h("h2", {}, "Translate"),
         h("label", { class: "field" }, "Gemini model", this.modelSelect),
@@ -143,13 +166,17 @@ class NewPostView {
     const chosen = draft.chosen;
     const tiles = draft.photos.map((p) => {
       const isChosen = chosen && chosen.type === "telegram" && chosen.msg_id === p.msg_id && chosen.chat_id === p.chat_id;
+      // A video without a thumbnail has no picture to show
+      const picture = p.video && !p.has_image
+        ? h("span", { class: "video-tile" }, "Video")
+        : h("img", { src: `/api/telegram/media/${p.chat_id}/${p.msg_id}`, alt: p.video ? "Video from Telegram" : "Photo from Telegram" });
       return h("button", {
-        class: "photo-choice" + (isChosen ? " chosen" : ""), title: "Use this photo",
+        class: "photo-choice" + (isChosen ? " chosen" : ""), title: p.video ? "Use this video" : "Use this photo",
         onclick: () => { draft.chosen = { type: "telegram", ...p }; this.renderPhotos(); },
-      }, h("img", { src: `/api/telegram/media/${p.chat_id}/${p.msg_id}`, alt: "Photo from Telegram" }));
+      }, picture, p.video ? h("span", { class: "play-mark" }, "▶") : null);
     });
 
-    const fileInput = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/avif", hidden: true });
+    const fileInput = h("input", { type: "file", accept: "image/jpeg,image/png,image/webp,image/avif,video/*", hidden: true });
     fileInput.addEventListener("change", () => {
       const file = fileInput.files[0];
       if (!file) return;
@@ -160,17 +187,19 @@ class NewPostView {
       this.renderPhotos();
     });
     if (draft.upload) {
+      const isVideo = isVideoFile(draft.upload);
       tiles.push(h("button", {
-        class: "photo-choice" + (chosen && chosen.type === "upload" ? " chosen" : ""), title: "Use this photo",
+        class: "photo-choice" + (chosen && chosen.type === "upload" ? " chosen" : ""), title: isVideo ? "Use this video" : "Use this photo",
         onclick: () => { draft.chosen = { type: "upload" }; this.renderPhotos(); },
-      }, h("img", { src: draft.uploadPreview, alt: "Uploaded photo" })));
+      }, isVideo ? uploadedVideo(draft.uploadPreview, draft.upload.name) : h("img", { src: draft.uploadPreview, alt: "Uploaded photo" }),
+      isVideo ? h("span", { class: "play-mark" }, "▶") : null));
     }
     tiles.push(h("label", { class: "photo-choice upload" }, fileInput,
-      h("span", {}, draft.upload ? "Choose another photo" : "Upload from this device")));
+      h("span", {}, draft.upload ? "Choose another file" : "Upload a photo or video")));
 
     const hint = h("p", { class: "muted small" }, draft.photos.length
-      ? "Tap the photo to use."
-      : "No photo picked from Telegram. Upload one, or select a photo message in the Telegram tab.");
+      ? "Tap the photo or video to use."
+      : "Nothing picked from Telegram. Upload a photo or video, or select a photo or video message in the Telegram tab.");
     this.photoGrid.replaceChildren(hint, h("div", { class: "photo-tiles" }, tiles));
   }
 
@@ -192,21 +221,31 @@ class NewPostView {
     };
     await withButton(button, "Working...", async () => {
       if (!draft.text.trim()) throw new Error("Add the news text first.");
-      if (!draft.chosen) throw new Error("Choose a photo first.");
+      if (!draft.chosen) throw new Error("Choose a photo or video first.");
 
-      show("Preparing the photo...");
-      let token;
-      if (draft.chosen.type === "telegram") {
-        token = (await api("/api/uploads/telegram", { json: { chat_id: draft.chosen.chat_id, msg_id: draft.chosen.msg_id } })).token;
-      } else {
-        token = (await api("/api/uploads", {
-          method: "POST", headers: { "Content-Type": draft.upload.type || "image/jpeg" }, body: draft.upload,
-        })).token;
+      // Kept for retries with another model, so a video isn't uploaded and prepared again
+      const choice = draft.chosen.type === "telegram" ? `${draft.chosen.chat_id}/${draft.chosen.msg_id}` : draft.upload;
+      let token = draft.token && draft.token.choice === choice ? draft.token.value : null;
+      if (!token) {
+        const isVideo = draft.chosen.type === "telegram" ? draft.chosen.video : isVideoFile(draft.upload);
+        show(isVideo ? "Preparing the video. A long video takes a while..." : "Preparing the photo...");
+        if (draft.chosen.type === "telegram") {
+          token = (await api("/api/uploads/telegram", { json: { chat_id: draft.chosen.chat_id, msg_id: draft.chosen.msg_id } })).token;
+        } else {
+          token = (await api("/api/uploads", {
+            method: "POST", headers: { "Content-Type": draft.upload.type || "application/octet-stream" }, body: draft.upload,
+          })).token;
+        }
+        draft.token = { choice, value: token };
       }
 
       const model = this.modelSelect.value || null;
       show(`Translating with ${model || "the last used model"}. This can take up to a minute...`);
-      const { name } = await api("/api/sessions", { json: { text: draft.text, image_token: token, model } });
+      const { name } = await api("/api/sessions", { json: { text: draft.text, image_token: token, model } })
+        .catch((e) => {
+          if (e.status === 404) draft.token = null; // the upload was cleaned up; the next try sends it again
+          throw e;
+        });
       if (draft.uploadPreview) URL.revokeObjectURL(draft.uploadPreview);
       app.draft = null;
       location.hash = `#/post/${encodeURIComponent(name)}`;
@@ -264,6 +303,8 @@ class PostView {
     this.viewsTimer = null;
     this.renderOptions = null; // area and blur being edited, sent with "Render images"
     this.chosenChannels = new Set(); // none ticked at first: picking a few is quicker than unticking most
+    this.channelCards = new Map(); // channel -> its card in section 2, replaced alone when its video is done
+    this.renderStatus = new Map(); // channel -> where a video post's card shows how its render is going
   }
 
   async mount() {
@@ -276,11 +317,11 @@ class PostView {
       return;
     }
     for (const job of this.detail.jobs) this.jobs.set(job.kind, job);
-    this.renderOptions = { aoi: this.detail.render.aoi, blur: this.detail.render.blur };
+    this.renderOptions = { aoi: this.detail.render.aoi, blur: this.detail.render.blur, mute: this.detail.render.mute };
 
     // Until the user opens or closes one, captions start folded: they rarely need changes
     const texts = postSection("texts", "1. Texts", true);
-    const images = postSection("images", "2. Images", true);
+    const images = postSection("images", this.detail.video ? "2. Video" : "2. Images", true);
     const captions = postSection("captions", "3. Captions", false);
     const publish = postSection("publish", "4. Publish", true);
     this.textsCard = texts.body;
@@ -318,6 +359,7 @@ class PostView {
   update(detail) {
     if (!detail) return;
     this.detail = detail;
+    for (const job of detail.jobs || []) this.jobs.set(job.kind, job);
     this.renderImages();
     this.renderCaptions();
     this.renderPublish();
@@ -363,6 +405,8 @@ class PostView {
     const card = this.imagesCard;
     const d = this.detail;
     card.replaceChildren();
+    this.channelCards.clear();
+    this.renderStatus.clear();
     if (!d.raw_image) {
       card.append(h("p", { class: "error" }, "This post has no photo (raw_image.*)."));
       return;
@@ -376,7 +420,8 @@ class PostView {
       blurValue.textContent = blur.value;
     });
     const rendered = d.channels.some((c) => c.image);
-    const renderButton = h("button", { class: "btn primary" }, rendered ? "Render images again" : "Render images");
+    const what = d.video ? "" : " images";
+    const renderButton = h("button", { class: "btn primary" }, rendered ? `Render${what} again` : `Render${what}`);
     renderButton.addEventListener("click", () => withButton(renderButton, "Rendering...", async () => {
       this.update(await api(sessionUrl(this.name, "/render"), { json: this.renderOptions }));
     }, error));
@@ -386,18 +431,38 @@ class PostView {
         this.aoiEditor(),
         h("div", { class: "render-controls" },
           h("label", { class: "field" }, h("span", {}, "Background blur: ", blurValue), blur),
+          d.video ? this.muteOption() : null,
           h("div", { class: "btn-row" }, renderButton),
+          d.video ? h("p", { class: "muted small" },
+            "Each channel's still appears at once. The videos then render in the background, one channel after another.") : null,
           error)),
       h("div", { class: "channel-grid" }, d.channels.map((c) => this.channelImageCard(c))));
   }
 
+  /** For video posts: leave the sound out of the rendered videos (applies on the next render). */
+  muteOption() {
+    const hasSound = this.detail.video.audio;
+    const box = h("input", { type: "checkbox", checked: hasSound && this.renderOptions.mute, disabled: !hasSound });
+    box.addEventListener("change", () => { this.renderOptions.mute = box.checked; });
+    return h("div", { class: "field" },
+      h("label", { class: "check" }, box, h("span", {}, "Mute the videos")),
+      h("span", { class: "muted small" }, hasSound
+        ? "The posted videos have no sound. Takes effect when you render."
+        : "This video has no sound."));
+  }
+
   aoiEditor() {
     const { file, version, width, height } = this.detail.raw_image;
+    const video = this.detail.video;
+    const noun = video ? "video" : "photo";
     const scale = 1 + 2 * AOI_MARGIN;
     const frame = h("div", { class: "aoi-frame", title: "Drag to mark the area that must stay visible" });
     frame.style.aspectRatio = `${width} / ${height}`;
     const rect = h("div", { class: "aoi-rect" });
-    frame.append(h("img", { class: "aoi-photo", src: sessionFileUrl(this.name, file, version), alt: "", draggable: "false" }), rect);
+    // A video plays in a loop, so the area can be checked against every moment of it
+    frame.append(video
+      ? loopingVideo(sessionFileUrl(this.name, video.file, video.version), sessionFileUrl(this.name, file, version), "aoi-photo")
+      : h("img", { class: "aoi-photo", src: sessionFileUrl(this.name, file, version), alt: "", draggable: "false" }), rect);
 
     // Frame coordinates (0..1) <-> photo pixels; the photo sits in the middle of the margin
     const toPhoto = (event) => {
@@ -421,8 +486,8 @@ class PostView {
     const note = h("p", { class: "muted small" });
     const describe = () => {
       note.textContent = this.renderOptions.aoi
-        ? "Area set. Images are cropped around it (or fit whole when it covers most of the photo)."
-        : "Drag on the photo to mark the area that must stay visible. The dark margin can be included to add space. Without an area the photo is center-cropped.";
+        ? `Area set. ${video ? "Every frame is" : "Images are"} cropped around it (or fit whole when it covers most of the ${noun}).`
+        : `Drag on the ${noun} to mark the area that must stay visible. The dark margin can be included to add space. Without an area the ${noun} is center-cropped.`;
     };
 
     let start = null;
@@ -488,16 +553,86 @@ class PostView {
       actions.append(reset);
     }
 
-    const picture = c.image
-      ? h("a", { href: sessionFileUrl(this.name, c.image.file, c.image.version), target: "_blank", rel: "noopener" },
-        h("img", { src: sessionFileUrl(this.name, c.image.file, c.image.version), alt: c.name, loading: "lazy" }))
-      : h("div", { class: "no-image" }, "Not rendered yet");
-    return h("div", { class: "channel-card" },
+    let picture;
+    if (this.detail.video) {
+      picture = this.channelVideo(c);
+    } else {
+      picture = c.image
+        ? h("a", { href: sessionFileUrl(this.name, c.image.file, c.image.version), target: "_blank", rel: "noopener" },
+          h("img", { src: sessionFileUrl(this.name, c.image.file, c.image.version), alt: c.name, loading: "lazy" }))
+        : h("div", { class: "no-image" }, "Not rendered yet");
+    }
+    const card = h("div", { class: "channel-card" },
       picture,
       h("div", { class: "channel-card-body" },
         h("div", { class: "channel-name" }, h("strong", {}, c.name), h("span", { class: "muted" }, ` · ${c.language}`)),
         badges.length ? h("div", { class: "badges" }, badges) : null,
         actions, editor, error));
+    this.channelCards.set(c.name, card);
+    return card;
+  }
+
+  /** True while the running video job still has this channel to render. */
+  videoPending(c) {
+    const job = this.jobs.get("videos");
+    return Boolean(job && job.channels.includes(c.name) && !job.results[c.name]);
+  }
+
+  /** A video post's channel: its video once rendered, before that its still and how the render goes. */
+  channelVideo(c) {
+    const still = c.image ? sessionFileUrl(this.name, c.image.file, c.image.version) : null;
+    if (c.video && !c.video_outdated && !this.videoPending(c)) {
+      // Played by clicking it: the browser's controls would cover the headline at the bottom
+      const video = h("video", { class: "channel-video", src: sessionFileUrl(this.name, c.video.file, c.video.version), poster: still,
+        preload: "metadata", playsinline: true, loop: true, tabindex: 0, title: "Play or pause" });
+      const mark = h("span", { class: "play-mark big" }, "▶");
+      const toggle = () => (video.paused ? video.play() : video.pause());
+      video.addEventListener("click", toggle);
+      video.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          toggle();
+        }
+      });
+      video.addEventListener("play", () => { mark.hidden = true; });
+      video.addEventListener("pause", () => { mark.hidden = false; });
+      return h("div", { class: "video-card" }, video, mark);
+    }
+    const status = h("div", { class: "render-status" });
+    this.renderStatus.set(c.name, status);
+    this.showRenderStatus(c, status);
+    return h("div", { class: "video-pending" },
+      still ? h("img", { src: still, alt: c.name, loading: "lazy" }) : h("div", { class: "no-image" }, "Not rendered yet"),
+      status);
+  }
+
+  showRenderStatus(c, status) {
+    const job = this.jobs.get("videos");
+    if (this.videoPending(c)) {
+      if (job.current === c.name) {
+        const percent = Math.round(job.progress * 100);
+        status.replaceChildren(h("span", {}, `Rendering the video... ${percent}%`), h("progress", { max: 100, value: percent }));
+      } else {
+        status.replaceChildren(h("span", {}, "Waiting to render the video"));
+      }
+      return;
+    }
+    if (!c.image) {
+      status.replaceChildren();
+      return;
+    }
+    // The last job's error stays on the card after the job has ended
+    const last = job || this.lastVideoJob;
+    const failed = last && last.results[c.name] && last.results[c.name].error;
+    const render = h("button", { class: "btn" }, "Render video");
+    const error = h("span", { class: "error", hidden: true });
+    render.addEventListener("click", () => withButton(render, "Starting...", async () => {
+      this.update(await api(sessionUrl(this.name, "/videos"), { json: { channels: [c.name] } }));
+    }, error));
+    status.replaceChildren(
+      h("span", { class: failed ? "error" : "" },
+        failed ? `The video failed: ${failed}` : c.video ? "The video is older than this still." : "No video yet."),
+      render, error);
   }
 
   // ---------------------------------------------------------------- 3. captions
@@ -693,7 +828,7 @@ class PostView {
     if (!this.publishControls) return;
     const card = this.publishControls;
     const d = this.detail;
-    const running = [...this.jobs.values()].find((j) => j.status === "running");
+    const running = [...this.jobs.values()].find((j) => j.kind !== "videos" && j.status === "running");
     const error = h("p", { class: "error", hidden: true });
     card.replaceChildren();
 
@@ -701,8 +836,11 @@ class PostView {
       card.append(h("p", { class: "warn" }, "Telegram isn't connected. ", h("a", { href: "#/setup" }, "Open Setup"), "."));
     }
 
-    // "All channels" ticks every channel that has an image and a caption; half-ticked when only some are
-    const readyNames = d.channels.filter((c) => c.image && c.caption !== null).map((c) => c.name);
+    // A channel is ready with its image (a video post: its current video) and a caption
+    const hasMedia = (c) => (d.video ? c.video && !c.video_outdated && !this.videoPending(c) : c.image);
+    const isReady = (c) => hasMedia(c) && c.caption !== null;
+    // "All channels" ticks every ready channel; half-ticked when only some are
+    const readyNames = d.channels.filter(isReady).map((c) => c.name);
     const boxes = new Map();
     const allBox = h("input", { type: "checkbox", disabled: !readyNames.length || !!running });
     const syncAll = () => {
@@ -720,7 +858,7 @@ class PostView {
 
     // Numbered in channels.json order, the order the server lists them in
     const rows = d.channels.map((c, i) => {
-      const ready = c.image && c.caption !== null;
+      const ready = isReady(c);
       const box = h("input", { type: "checkbox", checked: ready && this.chosenChannels.has(c.name), disabled: !ready || !!running });
       if (ready) boxes.set(c.name, box);
       box.addEventListener("change", () => {
@@ -731,14 +869,14 @@ class PostView {
       return h("tr", {},
         h("td", { class: "row-number" }, i + 1),
         h("td", {}, h("label", { class: "check" }, box, h("span", {}, c.name), h("span", { class: "muted" }, ` · ${c.language}`)),
-          ready ? null : h("div", { class: "muted small" }, c.image ? "no caption" : "not rendered yet"),
+          ready ? null : h("div", { class: "muted small" }, hasMedia(c) ? "no caption" : d.video ? "video not rendered yet" : "not rendered yet"),
           c.has_target ? null : h("div", { class: "warn small" }, "no chat_id in channels.json")),
         h("td", {}, this.sendResult(c, "previews")),
         h("td", {}, this.sendResult(c, "published")));
     });
     syncAll();
 
-    const chosen = () => d.channels.filter((c) => this.chosenChannels.has(c.name) && c.image && c.caption !== null).map((c) => c.name);
+    const chosen = () => d.channels.filter((c) => this.chosenChannels.has(c.name) && isReady(c)).map((c) => c.name);
     const send = (kind, button, busy) => withButton(button, busy, async () => {
       const channels = chosen();
       if (!channels.length) throw new Error("Tick at least one channel.");
@@ -752,9 +890,10 @@ class PostView {
     }, error);
 
     const reviewName = this.reviewChat ? this.reviewChat.name : d.review_channel;
-    const previewButton = h("button", { class: "btn", disabled: !telegramReady() || !d.review_channel || !!running }, "Send previews");
+    const sendable = telegramReady() && !running;
+    const previewButton = h("button", { class: "btn", disabled: !sendable || !d.review_channel }, "Send previews");
     previewButton.addEventListener("click", () => send("previews", previewButton, "Starting..."));
-    const publishButton = h("button", { class: "btn danger", disabled: !telegramReady() || !!running }, "Publish to live channels");
+    const publishButton = h("button", { class: "btn danger", disabled: !sendable }, "Publish to live channels");
     publishButton.addEventListener("click", () => send("published", publishButton, "Starting..."));
 
     card.append(
@@ -775,6 +914,10 @@ class PostView {
 
   onJob(job) {
     if (job.session !== this.name) return;
+    if (job.kind === "videos") {
+      this.onVideoJob(job);
+      return;
+    }
     this.jobs.set(job.kind, job);
     this.renderPublish();
     // A preview was just sent: show it in the review chat (also when Telegram sends no update for our own posts)
@@ -791,5 +934,34 @@ class PostView {
         if (job.kind === "published" && job.previews_removed && this.reviewPane) this.reviewPane.open(this.reviewPane.id);
       });
     }
+  }
+
+  /** Video render progress. Only the cards change, so the area editor keeps playing. */
+  async onVideoJob(job) {
+    if (job.status === "replaced") return; // a newer job took over; its events follow
+    const known = this.jobs.get("videos");
+    const before = known && known.id === job.id ? Object.keys(known.results) : [];
+    const finished = Object.keys(job.results).filter((name) => !before.includes(name));
+    this.lastVideoJob = job;
+    if (job.status === "running") this.jobs.set("videos", job);
+    else this.jobs.delete("videos");
+    if (job.status === "failed") alert(`Rendering the videos stopped: ${job.error}`);
+
+    if (!finished.length && job.status === "running") {
+      for (const c of this.detail.channels) {
+        const status = this.renderStatus.get(c.name);
+        if (status && status.isConnected) this.showRenderStatus(c, status);
+      }
+      return;
+    }
+    // A channel is done: its card shows the new video, and it can be ticked for publishing
+    this.detail = await api(sessionUrl(this.name));
+    for (const c of this.detail.channels) {
+      const card = this.channelCards.get(c.name);
+      if (card && card.isConnected && (finished.includes(c.name) || job.status !== "running")) card.replaceWith(this.channelImageCard(c));
+      const status = this.renderStatus.get(c.name);
+      if (status && status.isConnected) this.showRenderStatus(c, status);
+    }
+    this.renderPublish();
   }
 }

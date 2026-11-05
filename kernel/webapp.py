@@ -47,7 +47,7 @@ mimetypes.add_type("image/avif", ".avif")
 ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 
 CONTENT_SECURITY_POLICY = (
-    "default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; "
+    "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self'; script-src 'self'; "
     "connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
 
@@ -322,9 +322,12 @@ async def live_events(request: Request):
 # ==========================================
 # Rendering writes the session's image files; one render at a time avoids two writers
 render_lock = asyncio.Lock()
-# Sending previews or live posts runs in the background: job ID -> state
+# ffmpeg uses every CPU core, so video posts render one job at a time
+video_lock = asyncio.Lock()
+# Background jobs: sending previews or live posts, and rendering a video post's videos. Job ID -> state
 send_jobs = {}
 MAX_KEPT_JOBS = 50
+SEND_KINDS = ("previews", "published")
 
 async def post_call(func, *args, **kwargs):
     """Runs a pipeline_service function in a worker thread, turning its errors into HTTP errors."""
@@ -357,14 +360,30 @@ async def gemini_models():
     return {"models": models, "last": profile.get("last_used_model"), "error": None}
 
 @app.post("/api/uploads")
-async def upload_photo(request: Request):
-    """The photo is the raw request body. Requiring an image content type also keeps other sites out."""
-    if not request.headers.get("content-type", "").startswith("image/"):
-        raise HTTPException(415, "Send the photo as the request body with an image/* content type.")
-    if int(request.headers.get("content-length") or 0) > pipeline_service.MAX_UPLOAD_BYTES:
-        raise HTTPException(413, "The photo is larger than 30 MB.")
-    data = await request.body()
-    return {"token": await post_call(pipeline_service.save_upload, data)}
+async def upload_media(request: Request):
+    """The photo or video is the raw request body, written to disk as it arrives.
+
+    Requiring one of these content types (not ones a plain HTML form can send) also keeps other sites out.
+    """
+    content_type = request.headers.get("content-type", "")
+    if not content_type.startswith(("image/", "video/", "application/octet-stream")):
+        raise HTTPException(415, "Send the photo or video as the request body with an image/* or video/* content type.")
+    if int(request.headers.get("content-length") or 0) > pipeline_service.MAX_VIDEO_BYTES:
+        raise HTTPException(413, "The file is larger than 2 GB.")
+
+    path = pipeline_service.new_upload_path()
+    size = 0
+    try:
+        with open(path, "wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > pipeline_service.MAX_VIDEO_BYTES:
+                    raise HTTPException(413, "The file is larger than 2 GB.")
+                await run_in_threadpool(f.write, chunk)
+    except BaseException:
+        os.remove(path)
+        raise
+    return {"token": await post_call(pipeline_service.adopt_upload, path)}
 
 class TelegramPhotoBody(BaseModel):
     chat_id: int
@@ -373,8 +392,9 @@ class TelegramPhotoBody(BaseModel):
 @app.post("/api/uploads/telegram")
 async def upload_from_telegram(body: TelegramPhotoBody):
     require_telegram()
-    path = await telegram_call(telegram.download_source_photo(body.chat_id, body.msg_id, pipeline_service.new_download_path()))
-    return {"token": await post_call(pipeline_service.adopt_download, path)}
+    target = pipeline_service.new_upload_path("download")
+    path = await telegram_call(telegram.download_source_media(body.chat_id, body.msg_id, target))
+    return {"token": await post_call(pipeline_service.adopt_upload, path)}
 
 @app.get("/api/sessions")
 async def sessions_list():
@@ -413,12 +433,26 @@ async def save_post_text(name: str, lang: str, body: TextBody):
 class RenderBody(BaseModel):
     aoi: list[float] | None = None
     blur: int = pipeline_service.DEFAULT_BLUR
+    mute: bool = False
 
 @app.post("/api/sessions/{name}/render")
 async def render_post(name: str, body: RenderBody):
+    """Renders every channel's image; for a video post they are stills and the videos follow as a job."""
     session_dir = await post_call(pipeline_service.session_path, name)
-    await post_call(pipeline_service.set_render_options, session_dir, body.aoi, body.blur)
+    await post_call(pipeline_service.set_render_options, session_dir, body.aoi, body.blur, body.mute)
     await render_call(pipeline_service.render_channels, session_dir)
+    start_video_job(name, session_dir)
+    return await detail_response(name)
+
+class VideosBody(BaseModel):
+    channels: list[str] | None = None
+
+@app.post("/api/sessions/{name}/videos")
+async def render_post_videos(name: str, body: VideosBody):
+    """Renders a video post's videos again (all channels, or the given ones), e.g. after one failed."""
+    session_dir = await post_call(pipeline_service.session_path, name)
+    if not start_video_job(name, session_dir, body.channels):
+        raise HTTPException(400, "This post has no video.")
     return await detail_response(name)
 
 class OverrideBody(BaseModel):
@@ -430,18 +464,21 @@ async def override_channel(name: str, channel: str, body: OverrideBody):
     """Image-only headline and font size for one channel; an empty body goes back to the text's headline."""
     session_dir = await post_call(pipeline_service.session_path, name)
     await render_call(pipeline_service.set_override, session_dir, channel, body.headline, body.font_size)
+    start_video_job(name, session_dir, [channel])
     return await detail_response(name)
 
 @app.post("/api/sessions/{name}/channels/{channel}/shrink")
 async def shrink_channel(name: str, channel: str):
     session_dir = await post_call(pipeline_service.session_path, name)
     await render_call(pipeline_service.shrink_to_fit, session_dir, channel)
+    start_video_job(name, session_dir, [channel])
     return await detail_response(name)
 
 @app.post("/api/sessions/{name}/channels/{channel}/shorten")
 async def shorten_channel(name: str, channel: str):
     session_dir = await post_call(pipeline_service.session_path, name)
     await render_call(pipeline_service.shorten_with_gemini, session_dir, channel)
+    start_video_job(name, session_dir, [channel])
     return await detail_response(name)
 
 class CaptionBody(BaseModel):
@@ -465,6 +502,74 @@ class SendBody(BaseModel):
 
 def job_update(job):
     telegram.push({"type": "job", "job": job})
+
+def running_job(name, kinds):
+    return next((j for j in send_jobs.values() if j["session"] == name and j["kind"] in kinds and j["status"] == "running"), None)
+
+def add_job(job):
+    send_jobs[job["id"]] = job
+    for old_id in list(send_jobs)[:-MAX_KEPT_JOBS]:
+        send_jobs.pop(old_id)
+
+def start_video_job(name, session_dir, channels=None):
+    """Starts rendering a video post's videos (all channels by default) in the background.
+
+    Progress arrives as "job" events. A render already running for the post is stopped and replaced;
+    the new job also renders the channels the old one hadn't finished. Returns the job, or None
+    for a photo post.
+    """
+    if not pipeline_service.find_raw_video(session_dir):
+        return None
+    config_order = list(load_channels_config().get("channels", {}))
+    wanted = set(config_order if channels is None else channels)
+    previous = running_job(name, ("videos",))
+    if previous:
+        previous["cancelled"] = True
+        previous["status"] = "replaced"
+        job_update(previous)
+        wanted |= {c for c in previous["channels"] if c not in previous["results"]}
+
+    job = {"id": os.urandom(6).hex(), "session": name, "kind": "videos",
+           "channels": [c for c in config_order if c in wanted], "status": "running",
+           "results": {}, "current": None, "progress": 0, "error": None, "cancelled": False}
+    add_job(job)
+    asyncio.create_task(run_video_job(job, session_dir))
+    return job
+
+async def run_video_job(job, session_dir):
+    loop = asyncio.get_running_loop()
+
+    def set_progress(channel, fraction):
+        job["current"], job["progress"] = channel, round(fraction, 3)
+        job_update(job)
+
+    def set_done(channel, error):
+        job["results"][channel] = {"ok": error is None, "error": error}
+        job["current"], job["progress"] = None, 0
+        job_update(job)
+
+    # Called from the worker thread: the job is only changed on the event loop's thread
+    def on_progress(channel, fraction):
+        if job["cancelled"]:
+            raise pipeline_service.RenderCancelled()
+        loop.call_soon_threadsafe(set_progress, channel, fraction)
+
+    def on_done(channel, error):
+        loop.call_soon_threadsafe(set_done, channel, error)
+
+    async with video_lock:
+        if job["cancelled"]:
+            return
+        try:
+            await run_in_threadpool(pipeline_service.render_videos, session_dir, job["channels"], on_progress, on_done)
+            job["status"] = "done"
+        except pipeline_service.RenderCancelled:
+            return  # replaced by a newer job, which reports from here on
+        except Exception as e:
+            job["status"], job["error"] = "failed", str(e)
+    # Lets the last on_done callbacks run before the final update
+    await asyncio.sleep(0)
+    job_update(job)
 
 async def run_send_job(job, session_dir):
     config = load_channels_config()
@@ -518,10 +623,12 @@ async def send_post(name: str, body: SendBody):
     session_dir = await post_call(pipeline_service.session_path, name)
     config = load_channels_config()
     unknown = [c for c in body.channels if c not in config.get("channels", {})]
-    if body.kind not in ("previews", "published") or unknown or not body.channels:
+    if body.kind not in SEND_KINDS or unknown or not body.channels:
         raise HTTPException(400, "Choose at least one configured channel." + (f" Unknown: {', '.join(unknown)}" if unknown else ""))
-    if any(j["session"] == name and j["status"] == "running" for j in send_jobs.values()):
+    if running_job(name, SEND_KINDS):
         raise HTTPException(409, "This post is already being sent. Wait for it to finish.")
+    if running_job(name, ("videos",)):
+        raise HTTPException(409, "The videos are still rendering. Send once they're done.")
 
     target = None
     if body.kind == "previews":
@@ -533,9 +640,7 @@ async def send_post(name: str, body: SendBody):
     job_id = os.urandom(6).hex()
     job = {"id": job_id, "session": name, "kind": body.kind, "channels": body.channels, "target": target,
            "status": "running", "results": {}, "error": None}
-    send_jobs[job_id] = job
-    for old_id in list(send_jobs)[:-MAX_KEPT_JOBS]:
-        send_jobs.pop(old_id)
+    add_job(job)
     asyncio.create_task(run_send_job(job, session_dir))
     return job
 

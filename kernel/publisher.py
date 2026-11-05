@@ -1,3 +1,4 @@
+import io
 import os
 import random
 import asyncio
@@ -9,7 +10,13 @@ sys.dont_write_bytecode = True
 
 # Import existing auth manager (assumed to be in the same directory)
 import auth_manager
-from common import load_channels_config, get_latest_session_directory
+# Imported before PIL so the bundled FriBiDi is on PATH
+from common import load_channels_config, get_latest_session_directory, find_raw_video, load_video_info
+from PIL import Image
+from telethon.tl.types import DocumentAttributeVideo
+
+# Telegram shows a video's thumbnail only if it is a JPEG of at most 320 px per side
+THUMBNAIL_SIZE = 320
 
 def parse_target(target):
     """
@@ -115,16 +122,48 @@ def select_channels_ui(channels_dict):
         print("[ERROR] Invalid selection input format.")
         return []
 
+def video_thumbnail(still_path):
+    """The channel's still (its rendered image) as the video's thumbnail."""
+    with Image.open(still_path) as img:
+        thumb = img.convert("RGB")
+    thumb.thumbnail((THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+    data = io.BytesIO()
+    thumb.save(data, "JPEG", quality=85)
+    data.name = "thumbnail.jpg"
+    data.seek(0)
+    return data
+
+def video_send_options(session_dir, still_path):
+    """send_file() options that make Telegram show the video inline and stream it.
+
+    Telethon can only read a video's duration and size with the optional hachoir package, so
+    they are given here: the duration from video_info.json, the size from the still (the
+    video is the same size, rounded down to even numbers for H.264). nosound_video keeps a
+    silent (or muted) video a video; otherwise Telegram may show it as a looping GIF.
+    """
+    with Image.open(still_path) as img:
+        width, height = img.size
+    duration = load_video_info(session_dir).get("duration") or 0
+    return {
+        "supports_streaming": True,
+        "nosound_video": True,
+        "thumb": video_thumbnail(still_path),
+        "attributes": [DocumentAttributeVideo(duration=duration, w=width - width % 2, h=height - height % 2,
+                                               supports_streaming=True)],
+    }
+
 async def compile_and_send_post(client, target_peer, session_dir, channel_internal_name, log_prefix=""):
-    """Reloads the LATEST image and text from disk and sends them via Telethon.
+    """Reloads the LATEST image (a video post: video) and text from disk and sends them via Telethon.
 
     Returns the sent message, or None if a file is missing or sending failed.
     """
     img_path = os.path.join(session_dir, f"{channel_internal_name}_broadcast.jpg")
     txt_path = os.path.join(session_dir, f"{channel_internal_name}_caption.txt")
+    is_video = bool(find_raw_video(session_dir))
+    media_path = os.path.join(session_dir, f"{channel_internal_name}_broadcast.mp4") if is_video else img_path
 
-    if not os.path.exists(img_path):
-        print(f"{log_prefix} [X] Skipping {channel_internal_name}: Image file not found at {img_path}")
+    if not os.path.exists(media_path):
+        print(f"{log_prefix} [X] Skipping {channel_internal_name}: {'Video' if is_video else 'Image'} file not found at {media_path}")
         return None
     if not os.path.exists(txt_path):
         print(f"{log_prefix} [X] Skipping {channel_internal_name}: Caption file not found at {txt_path}")
@@ -134,11 +173,13 @@ async def compile_and_send_post(client, target_peer, session_dir, channel_intern
         caption_text = f.read()
 
     try:
+        options = video_send_options(session_dir, img_path) if is_video else {}
         return await client.send_file(
             target_peer,
-            file=img_path,
+            file=media_path,
             caption=caption_text,
-            parse_mode="html"
+            parse_mode="html",
+            **options
         )
     except Exception as e:
         print(f"{log_prefix} [ERROR] Failed to send post for {channel_internal_name}: {e}")

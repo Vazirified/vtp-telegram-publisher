@@ -6,3 +6,4 @@ python-bidi>=0.6         # Fallback RTL reordering when Raqm is unavailable
 google-genai>=2.10       # Gemini translation and headline shortening
 fastapi>=0.115           # Web interface (kernel/webapp.py)
 uvicorn>=0.30            # Web server for the web interface; plain uvicorn needs no compiler
+imageio-ffmpeg>=0.6      # ffmpeg for video posts (kernel/video_engine.py); uses ffmpeg on PATH where it has none

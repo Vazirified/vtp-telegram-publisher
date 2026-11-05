@@ -19,6 +19,10 @@ echo "[~] Installing FriBiDi and HarfBuzz text shaping libraries..."
 pkg install fribidi harfbuzz -y
 pkg install libraqm -y || echo "  [i] libraqm package not available; Pillow's bundled Raqm will be used instead."
 
+# 2c. ffmpeg for video posts in the web interface (imageio-ffmpeg has no Android build and uses this one)
+echo "[~] Installing ffmpeg for video posts..."
+pkg install ffmpeg -y
+
 # 3. Patch the known Termux X11 repository keymap path bug
 echo "[~] Executing X11 structural environment repair..."
 rm -rf $PREFIX/share/X11/xkb

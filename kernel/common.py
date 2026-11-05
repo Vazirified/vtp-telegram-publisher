@@ -29,6 +29,23 @@ def get_latest_session_directory():
     sessions = glob.glob(os.path.join(WORKSPACE_DIR, "session_*"))
     return sorted(sessions)[-1] if sessions else None
 
+# A video post keeps its video as raw_video.<ext>, its details (duration, frame size, ...) in
+# video_info.json, a still frame (the "photo" the images and the area selection use) and a small
+# copy browsers can play. Each channel's video is <channel>_broadcast.mp4.
+RAW_VIDEO = "raw_video"
+VIDEO_INFO = "video_info.json"
+VIDEO_FRAME = "video_frame.png"
+VIDEO_PREVIEW = "video_preview.mp4"
+
+def find_raw_video(session_dir):
+    """Returns the path of a video post's raw_video.* file, or None for a photo post."""
+    videos = glob.glob(os.path.join(session_dir, RAW_VIDEO + ".*"))
+    return videos[0] if videos else None
+
+def load_video_info(session_dir):
+    with open(os.path.join(session_dir, VIDEO_INFO), "r", encoding="utf-8") as f:
+        return json.load(f)
+
 def input_with_timeout(prompt_text, default_value, timeout=5):
     """Cross-platform input with a timeout and default fallback."""
     print(f"{prompt_text} [Auto-default: '{default_value}' in {timeout}s]: ", end='', flush=True)

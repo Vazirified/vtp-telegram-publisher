@@ -178,7 +178,7 @@ You can leave a post at any step and come back later from **Posts**, for example
   - Tapping a reaction under a message reacts with it; tapping your own removes it. A message gets one reaction from you; choosing another replaces it.
   - The picker only offers what the chat allows, and custom emoji only with Telegram Premium. Reacting works the same in the review chat and the published-post cards on a post page.
 - **Select mode** is on by default: tapping a message selects it for a new post, while buttons such as **☺+** and **Who reacted** still work. Tap **Select ✓** in the chat header to turn it off, so photos open full size and links can be followed; it stays off until the page is reloaded.
-- Reading here doesn't mark messages or reactions as read. Your reactions are the only thing this tab changes on Telegram.
+- **Read status:** opening a chat marks it as read on Telegram, as the Telegram apps do: its unread count and ♥ badge clear, and senders see their messages as read. New messages and reactions that arrive while the chat is open are marked too, but only while the browser tab is visible; otherwise when you come back to it. Chats you read in another Telegram app update here right away. Besides this, your reactions are the only thing this tab changes on Telegram.
 
 ### The Setup tab
 

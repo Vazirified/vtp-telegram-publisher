@@ -248,7 +248,7 @@ async def setup_gemini(body: GeminiKeyBody):
 # ==========================================
 # TELEGRAM TAB
 # ==========================================
-# Reading chats doesn't mark anything as read. Reacting is the only thing here that changes Telegram.
+# Besides reacting, the page changes Telegram only by marking the chat you open as read (/read).
 @app.get("/api/telegram/shortcuts")
 async def telegram_shortcuts():
     """The review channel and every live channel from channels.json (by name), for the top of the chat list.
@@ -316,12 +316,23 @@ class ReactionBody(BaseModel):
 
 @app.post("/api/telegram/chats/{chat_id}/messages/{msg_id}/reaction")
 async def telegram_react(chat_id: int, msg_id: int, body: ReactionBody):
-    """Reacts to a message as your account, replacing your previous reaction (the one Telegram change in this tab)."""
+    """Reacts to a message as your account, replacing your previous reaction."""
     require_telegram()
     if any(not (r.emoji or r.custom_emoji_id) for r in body.reactions):
         raise HTTPException(400, "Each reaction needs an emoji or a custom emoji ID.")
     reactions = [r.model_dump(exclude_none=True) for r in body.reactions]
     return await telegram_call(telegram.send_reaction(chat_id, msg_id, reactions))
+
+class ReadBody(BaseModel):
+    max_id: int = Field(0, ge=0)  # newest message seen; 0 leaves the messages as they are
+    reactions: bool = False  # also mark new reactions to your messages as seen
+
+@app.post("/api/telegram/chats/{chat_id}/read")
+async def telegram_mark_read(chat_id: int, body: ReadBody):
+    """Marks the open chat as read on Telegram (the page calls it while the chat is on screen)."""
+    require_telegram()
+    await telegram_call(telegram.mark_read(chat_id, body.max_id, body.reactions))
+    return {"ok": True}
 
 def image_response(path, missing_message):
     """Sends a file from the image cache (_workspace/web_cache/); the browser may keep it for a day."""

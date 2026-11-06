@@ -268,6 +268,8 @@ class TelegramService:
             self.client.add_event_handler(self.broadcast_update, event_type)
         # Reaction changes are their own update type; the message events above don't include them
         self.client.add_event_handler(self.broadcast_reactions, events.Raw(types.UpdateMessageReactions))
+        # Chats you read in another Telegram app, so the unread counts in the chat list follow
+        self.client.add_event_handler(self.broadcast_read, events.MessageRead(inbox=True))
         self.state = "ready"
         print(f"[OK] Telegram logged in as {utils.get_display_name(self.me)}.")
         # Loads recent chats so numeric IDs from channels.json can be resolved
@@ -344,6 +346,7 @@ class TelegramService:
                 "kind": chat_kind(dialog.entity),
                 "photo": profile_photo_id(dialog.entity),
                 "unread": dialog.unread_count,
+                "read_up_to": getattr(dialog.dialog, "read_inbox_max_id", 0),  # newest message you've read
                 # Reactions to your messages that you haven't seen yet
                 "unread_reactions": getattr(dialog.dialog, "unread_reactions_count", 0),
                 "pinned": dialog.pinned,
@@ -405,6 +408,15 @@ class TelegramService:
         if not msg:
             return None
         return (await self.messages_to_dicts([msg]))[0]
+
+    async def mark_read(self, chat_id, max_id=0, reactions=False):
+        """Marks a chat as read up to max_id (0 leaves the messages unread) and, with reactions, its new
+        reactions to your messages as seen. Senders see their messages as read, as with the Telegram apps."""
+        if reactions:
+            # Not send_read_acknowledge(clear_reactions=True): without a max_id it also reads every message
+            await self.client(functions.messages.ReadReactionsRequest(await self.client.get_input_entity(chat_id)))
+        if max_id:
+            await self.client.send_read_acknowledge(chat_id, max_id=max_id)
 
     async def list_reactors(self, chat_id, msg_id):
         """Everyone who reacted to a message, newest first. Telegram refuses this in broadcast channels."""
@@ -623,6 +635,11 @@ class TelegramService:
     async def broadcast_reactions(self, update):
         """Telethon handler for UpdateMessageReactions (reaction counts or reactors changed)."""
         self.push({"type": "reactions", "chat_id": utils.get_peer_id(update.peer), "ids": [update.msg_id]})
+
+    async def broadcast_read(self, event):
+        """Telethon handler for chats read in another Telegram app (or by this one)."""
+        if event.chat_id and not event.contents:  # "contents" events are about mentions and voice notes
+            self.push({"type": "read", "chat_id": event.chat_id})
 
 def clean_web_cache():
     """Deletes cached viewer images older than CACHE_MAX_AGE_DAYS (webapp calls it at start-up)."""

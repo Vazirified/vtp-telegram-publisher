@@ -634,7 +634,7 @@ class ChatPane {
   onUpdate(update) {
     // Deletions in private chats and small groups arrive without a chat ID
     const isOpen = this.chat && (this.chat.id === update.chat_id || (update.chat_id === null && update.type === "deleted"));
-    if (!isOpen) return;
+    if (!isOpen || update.type === "read") return; // "read" only changes the chat list's counts
     if (update.type === "new") {
       if (this.single) return; // showing one message only; newer ones don't belong here
       // Updates in quick succession (e.g. the messages of an album) cause one reload
@@ -653,7 +653,7 @@ class ChatPane {
  * The Telegram tab: the chat list on the left (shortcuts to the channels in channels.json, then
  * all chats) and the open chat on the right. On a phone only one of the two shows at a time
  * (the "show-chat" class). It stays mounted while moving between chats (see route()).
- * Reading here marks nothing as read; reacting is the only thing this tab changes on Telegram.
+ * Besides reacting, it changes Telegram only by marking the open chat as read (markRead).
  */
 class TelegramView {
   constructor() {
@@ -757,6 +757,7 @@ class TelegramView {
       }
       this.moreButton.hidden = more && page.length === 0;
       this.renderDialogs();
+      this.markRead(); // the open chat may have new messages or reactions
     } catch (e) {
       this.dialogList.replaceChildren(h("li", { class: "chat-item error" }, e.message));
     } finally {
@@ -841,7 +842,41 @@ class TelegramView {
     this.clearSelection();
     this.highlightActive();
     this.setChatTitle(this.knownName(id) || "Loading...");
-    if (await opening) this.renderChatTitle();
+    if (await opening) {
+      this.renderChatTitle();
+      this.markRead();
+    }
+  }
+
+  /**
+   * Marks the open chat as read on Telegram up to its newest loaded message, and its new reactions
+   * to your messages as seen, as the Telegram apps do. Runs when a chat opens, when the chat list
+   * reloads (after new messages or reactions) and when this browser tab becomes visible again; it
+   * does nothing while the tab is hidden or when the chat's row shows nothing new (unread messages
+   * are marked only when a newer one than Telegram's read position is loaded). A chat that isn't in
+   * the loaded list is marked once per newer message. Errors are ignored: the next call tries again.
+   */
+  async markRead() {
+    const chat = this.pane && this.pane.chat;
+    if (this.unavailable || !chat || !chat.info || document.hidden) return;
+    const row = this.dialogs.find((d) => d.id === chat.id);
+    const newest = Math.max(0, ...chat.messages.keys());
+    const maxId = (row ? row.unread && newest > row.read_up_to : newest > (chat.readUpTo || 0)) ? newest : 0;
+    const reactions = row ? !!row.unread_reactions : !chat.reactionsRead;
+    if (!maxId && !reactions) return;
+    try {
+      await api(`/api/telegram/chats/${chat.id}/read`, { json: { max_id: maxId, reactions } });
+    } catch {
+      return;
+    }
+    if (maxId) chat.readUpTo = Math.max(chat.readUpTo || 0, maxId);
+    if (reactions) chat.reactionsRead = true;
+    // The list may have reloaded meanwhile, so look the row up again
+    const current = this.dialogs.find((d) => d.id === chat.id);
+    if (!current) return;
+    if (maxId) Object.assign(current, { unread: 0, read_up_to: Math.max(current.read_up_to, maxId) });
+    if (reactions) current.unread_reactions = 0;
+    this.renderDialogs();
   }
 
   // ---------------------------------------------------------------- select mode
@@ -1106,6 +1141,10 @@ async function watchStatus() {
 document.addEventListener("DOMContentLoaded", async () => {
   await refreshStatus();
   window.addEventListener("hashchange", route);
+  // Coming back to this browser tab counts as seeing the open chat
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && app.view instanceof TelegramView) app.view.markRead();
+  });
   await route();
   startLiveUpdates();
   setInterval(watchStatus, 5000);

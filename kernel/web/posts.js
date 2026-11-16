@@ -13,6 +13,8 @@ const sessionUrl = (name, path = "") => `/api/sessions/${encodeURIComponent(name
 // `version` (the file's modification time) changes the URL after a new render, so the browser doesn't show a cached copy
 const sessionFileUrl = (name, file, version) => sessionUrl(name, `/files/${encodeURIComponent(file)}`) + (version ? `?v=${version}` : "");
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+// How often the post page asks the server about its running jobs, in case a live "job" event was missed (ms)
+const JOB_CHECK_INTERVAL = 5000;
 
 /** Saves after typing pauses (or at once with flush), and shows "Saving..." / "Saved" in statusEl. */
 function autosave(save, statusEl, delay = 800) {
@@ -314,14 +316,16 @@ function postSection(key, title, defaultOpen) {
  * One post's page. `detail` is what /api/sessions/<name> returns; actions that change the post answer
  * with fresh details, applied by update(). Each section has its own render function that redraws only
  * that section's body. Background jobs (sending previews, publishing, rendering videos) report through
- * live "job" events, which app.js passes to onJob().
+ * live "job" events, which app.js passes to onJob(); checkJobs() asks the server in case one was missed.
  */
 class PostView {
   constructor(name) {
     this.name = name;
     this.detail = null;
     this.savers = [];
-    this.jobs = new Map(); // "previews" | "published" -> running job
+    this.jobs = new Map(); // "previews" | "published" | "videos" -> running job
+    this.endedJobs = new Set(); // IDs of jobs seen ending: a late or repeated report of them is ignored
+    this.jobTimer = null; // checks the running jobs now and then (checkJobs)
     this.reviewChat = null; // {id, name, photo} of the review channel, once resolved
     this.reviewPane = null; // the review chat shown under the publish buttons while previews exist
     this.publishedCards = new Map(); // "<chat>/<msg>" -> {card, pane} of each published post
@@ -343,7 +347,8 @@ class PostView {
         h("div", { class: "card" }, h("p", { class: "error" }, e.message))));
       return;
     }
-    for (const job of this.detail.jobs) this.jobs.set(job.kind, job);
+    for (const job of this.detail.jobs) this.trackJob(job);
+    this.jobTimer = setInterval(() => this.checkJobs(), JOB_CHECK_INTERVAL);
     this.renderOptions = { aoi: this.detail.render.aoi, blur: this.detail.render.blur, mute: this.detail.render.mute };
 
     // Until the user opens or closes one, captions start folded: they rarely need changes
@@ -377,17 +382,18 @@ class PostView {
     this.loadReviewChat();
   }
 
-  /** Called before another page replaces this one: saves pending edits and stops the views timer. */
+  /** Called before another page replaces this one: saves pending edits and stops the timers. */
   leave() {
     for (const saver of this.savers) saver.flush();
     clearInterval(this.viewsTimer);
+    clearInterval(this.jobTimer);
   }
 
   /** Applies post details returned by an action and redraws everything except the text editors. */
   update(detail) {
     if (!detail) return;
     this.detail = detail;
-    for (const job of detail.jobs || []) this.jobs.set(job.kind, job);
+    for (const job of detail.jobs || []) this.trackJob(job);
     this.renderImages();
     this.renderCaptions();
     this.renderPublish();
@@ -956,7 +962,7 @@ class PostView {
         `Publish to ${channels.length} LIVE channel${channels.length > 1 ? "s" : ""}?\n\n${channels.join("\n")}\n\n`
         + "After publishing, their previews are deleted from the review channel.")) return;
       const job = await api(sessionUrl(this.name, "/send"), { json: { kind, channels } });
-      this.jobs.set(kind, job);
+      this.trackJob(job); // its first events may have arrived before this answer
       this.renderPublish();
       this.renderReviewSection(); // sending previews brings up the review chat
     }, error);
@@ -984,9 +990,64 @@ class PostView {
       h("div", { class: "btn-row" }, previewButton, publishButton));
   }
 
+  /**
+   * Takes a running job from a server answer (post details, or the answer to "Send"). Skipped when
+   * the job has already ended or events about it have arrived: the answer may be older than they are,
+   * and taking it would show the job as running again with nothing left to end it.
+   */
+  trackJob(job) {
+    const known = this.jobs.get(job.kind);
+    if (this.endedJobs.has(job.id) || (known && known.id === job.id)) return;
+    this.jobs.set(job.kind, job);
+  }
+
+  /**
+   * Asks the server about each running job (every JOB_CHECK_INTERVAL, and after the live updates
+   * reconnect). The page otherwise learns everything from "job" events, and one missed event (a
+   * dropped connection, a phone browser in the background) would leave the job running here for
+   * good: buttons disabled, previews not shown. A job the server no longer knows (restarted) is
+   * dropped and the post reloaded.
+   */
+  async checkJobs() {
+    if (this.checkingJobs || !this.jobs.size) return;
+    this.checkingJobs = true;
+    try {
+      for (const known of [...this.jobs.values()]) {
+        let job;
+        try {
+          job = await api(`/api/jobs/${known.id}`);
+        } catch (e) {
+          if (e.status !== 404 || this.jobs.get(known.kind) !== known) continue; // try again next time
+          this.jobs.delete(known.kind);
+          this.endedJobs.add(known.id);
+          this.reload();
+          continue;
+        }
+        if (this.jobs.get(known.kind) !== known) continue; // an event came meanwhile
+        if (job.status === "replaced") {
+          // A newer video job took over; the post's details name it
+          this.jobs.delete(known.kind);
+          this.endedJobs.add(known.id);
+          this.reload();
+        } else if (job.status !== known.status || Object.keys(job.results).length !== Object.keys(known.results).length) {
+          this.onJob(job);
+        }
+      }
+    } finally {
+      this.checkingJobs = false;
+    }
+  }
+
+  /** The live updates reconnected after a break: catches up on what was missed meanwhile. */
+  catchUp() {
+    this.checkJobs();
+    if (this.reviewPane) this.reviewPane.reload();
+    for (const { pane } of this.publishedCards.values()) pane.reload();
+  }
+
   /** A "job" event (for any post; others are ignored): send progress, or video render progress. */
   onJob(job) {
-    if (job.session !== this.name) return;
+    if (job.session !== this.name || this.endedJobs.has(job.id)) return;
     if (job.kind === "videos") {
       this.onVideoJob(job);
       return;
@@ -998,6 +1059,7 @@ class PostView {
       this.reviewPane.onUpdate({ type: "new", chat_id: this.reviewPane.id, ids: [] });
     }
     if (job.status !== "running") {
+      this.endedJobs.add(job.id);
       if (job.status === "failed") alert(`Sending stopped: ${job.error}`);
       if (job.cleanup_error) alert(`Published. ${job.cleanup_error}`);
       this.jobs.delete(job.kind);
@@ -1011,6 +1073,7 @@ class PostView {
 
   /** Video render progress. Only the cards change, so the area editor keeps playing. */
   async onVideoJob(job) {
+    if (job.status !== "running") this.endedJobs.add(job.id);
     if (job.status === "replaced") return; // a newer job took over; its events follow
     const known = this.jobs.get("videos");
     const before = known && known.id === job.id ? Object.keys(known.results) : [];

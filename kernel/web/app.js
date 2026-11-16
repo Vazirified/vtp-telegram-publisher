@@ -170,7 +170,8 @@ function copySafeNodes(source, target) {
 //   status      the last /api/status answer (Telegram state, Gemini key, config), or null when the server is unreachable
 //   view        the mounted page object (TelegramView, NewPostView or PostView), or null for Setup and the post list.
 //               Views may have mount(), leave() (called before another page replaces them),
-//               onUpdate(update) for live Telegram updates and, for PostView, onJob(job) and onTelegramStatus().
+//               onUpdate(update) for live Telegram updates, catchUp() after the live updates reconnect
+//               and, for PostView, onJob(job) and onTelegramStatus().
 //   draft       set later: the New post page's unsaved text and photo/video choice (TelegramView.startPost fills it)
 //   selectMode  set later: false once select mode was turned off, until the page is reloaded
 const app = { status: null, view: null };
@@ -963,6 +964,13 @@ class TelegramView {
     clearTimeout(this.dialogTimer);
     this.dialogTimer = setTimeout(() => this.loadDialogs(false), 1500);
   }
+
+  /** The live updates reconnected after a break: the open chat and the chat list are loaded again. */
+  catchUp() {
+    if (this.unavailable) return;
+    this.pane.reload();
+    this.loadDialogs(false);
+  }
 }
 
 // ==========================================
@@ -1108,10 +1116,21 @@ function systemCard(status) {
  * Listens to the server-sent events on /api/events: Telegram updates (new, edited and deleted
  * messages, reaction changes) go to the Telegram tab or the post page (review chat, published
  * cards); "job" events report the progress of sending and video rendering to the post page.
- * EventSource reconnects by itself when the connection drops.
+ * EventSource reconnects by itself when the connection drops (a phone browser in the background,
+ * the computer asleep); updates sent meanwhile are lost, so on every reconnect the open page
+ * catches up (catchUp). If the browser gives up (the server answered with an error), a new
+ * connection is tried after a while.
  */
+let liveUpdatesOpened = false; // a later open is a reconnect
 function startLiveUpdates() {
   const source = new EventSource("/api/events");
+  source.onopen = () => {
+    if (liveUpdatesOpened && app.view && app.view.catchUp) app.view.catchUp();
+    liveUpdatesOpened = true;
+  };
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED) setTimeout(startLiveUpdates, 5000);
+  };
   source.onmessage = (event) => {
     const update = JSON.parse(event.data);
     if (update.type === "job") {
